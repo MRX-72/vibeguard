@@ -1,22 +1,23 @@
 export default function ScanProgress({ status }) {
   const steps = status?.steps ?? []
-  const queued = !status || status.status === 'queued'
+  const queued = status?.status === 'queued'
 
   return (
     <section className="pt-10 sm:pt-16" aria-live="polite">
       <h1 className="text-2xl font-semibold tracking-tight">{queued ? 'Waiting for a free scanner…' : 'Scanning your code'}</h1>
       <p className="mt-2 text-muted">
-        {queued ? 'Another scan is running. Yours starts as soon as it finishes.' : status.stage}
+        {queued ? 'Another scan is running. Yours starts as soon as it finishes.' : status?.stage ?? 'Starting…'}
       </p>
 
       <ol className="mt-10 border-l border-line">
         {steps.map((s) => (
-          <li key={s.key} className="relative flex items-baseline gap-3 py-2.5 pl-6">
+          <li key={s.key} className="relative flex flex-wrap items-baseline gap-x-3 py-2.5 pl-6">
             <StepIcon state={s.state} />
             <span className={s.state === 'pending' ? 'text-faint' : s.state === 'running' ? 'text-fg' : 'text-muted'}>
               {s.label}
             </span>
-            {s.note && <span className="text-sm text-faint">{s.note}</span>}
+            {s.tool && <span className="text-sm text-faint">{s.tool}</span>}
+            {s.note && <span className="ml-auto text-sm text-faint">{s.note}</span>}
           </li>
         ))}
       </ol>

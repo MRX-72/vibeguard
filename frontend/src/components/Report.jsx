@@ -5,6 +5,8 @@ import FindingRow from './FindingRow'
 export default function Report({ report }) {
   const { scan, grade, findings } = report
   const shown = findings.filter((f) => !f.is_false_positive)
+  const noise = findings.filter((f) => f.is_false_positive)
+  const unchecked = (scan.steps ?? []).filter((s) => s.state === 'skipped' || s.state === 'failed')
   const counts = Object.fromEntries(ORDER.map((s) => [s, shown.filter((f) => f.severity === s).length]))
   const score = useCountUp(scan.risk_score ?? 0)
 
@@ -38,6 +40,27 @@ export default function Report({ report }) {
           {shown.map((f, i) => <FindingRow key={f.id} finding={f} index={i} />)}
         </ul>
       </section>
+
+      {noise.length > 0 && (
+        <details className="mt-8">
+          <summary className="cursor-pointer text-sm text-muted hover:text-fg">
+            {noise.length} filtered out as not a real risk
+          </summary>
+          <ul className="mt-3 flex flex-col gap-2">
+            {noise.map((f, i) => <FindingRow key={f.id} finding={f} index={i} />)}
+          </ul>
+        </details>
+      )}
+
+      {unchecked.length > 0 && (
+        <p className="mt-8 text-sm leading-relaxed text-faint">
+          Not checked:{' '}
+          {unchecked.map((s, i) => (
+            <span key={s.key}>{i > 0 && '; '}{s.label.toLowerCase()} ({s.tool}, {s.note})</span>
+          ))}
+          .
+        </p>
+      )}
     </article>
   )
 }

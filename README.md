@@ -11,7 +11,7 @@ Backend (Python 3.11+; [uv](https://docs.astral.sh/uv/) recommended):
 ```sh
 cd backend
 uv venv --python 3.12 .venv && uv pip install --python .venv/bin/python -r requirements.txt
-.venv/bin/uvicorn main:app --reload        # http://127.0.0.1:8000
+.venv/bin/uvicorn main:app --reload --env-file .env   # http://127.0.0.1:8000
 ```
 
 Frontend (Node 20+), in a second terminal:
@@ -34,6 +34,20 @@ npm install -g retire
 ```
 
 `uv tool` puts binaries in `~/.local/bin`; make sure it's on the `PATH` the backend runs with.
+
+Optional but faster: cache the Semgrep rule packs (`p/default` + `p/owasp-top-ten`, filtered to JS/TS/Python/config languages) so scans don't download them every time:
+
+```sh
+cd backend && .venv/bin/python rules/fetch_registry.py   # writes rules/registry.json (gitignored)
+```
+
+## Checks
+
+```sh
+cd backend && PATH="$HOME/.local/bin:$PATH" .venv/bin/python test_vibeguard.py
+```
+
+Covers ingestion safety (zip traversal, size caps, cleanup), dedupe, secret classification and masking, and runs every installed scanner against `sample-repo/`.
 
 ## Environment
 

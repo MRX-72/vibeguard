@@ -38,12 +38,17 @@ CREATE TABLE IF NOT EXISTS findings (
   reprompt TEXT,
   refs TEXT DEFAULT '[]',
   evidence TEXT DEFAULT '[]',
-  triage_note TEXT
+  triage_note TEXT,
+  kind TEXT,
+  end_line INTEGER,
+  cwe TEXT DEFAULT '[]',
+  package TEXT,
+  detected_by TEXT DEFAULT '[]'
 );
 CREATE INDEX IF NOT EXISTS findings_scan ON findings(scan_id);
 """
 
-JSON_COLS = {"steps", "refs", "evidence"}
+JSON_COLS = {"steps", "refs", "evidence", "cwe", "detected_by"}
 
 
 def connect():
