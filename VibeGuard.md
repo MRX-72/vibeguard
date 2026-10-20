@@ -243,12 +243,12 @@ Target 10–15 shipped rules. These three (XSS sink, SQL concat, frontend secret
 - [x] **Commit**
 
 ### Phase 1 — End-to-end skeleton with fake data
-- [ ] `POST /scan`, `GET /scan/{id}/status`, `GET /scan/{id}` implemented
-- [ ] Scanner is stubbed: returns 3–4 hardcoded fake findings after a short delay
-- [ ] `BackgroundTasks` drives job status `queued → running → done`
-- [ ] Frontend: input card (3 tabs), submit, poll status, render report with fake findings
-- [ ] Severity badges, expandable rows, risk score all render from fake data
-- [ ] **Commit** — *demoable: full UX works end to end*
+- [x] `POST /scan`, `GET /scan/{id}/status`, `GET /scan/{id}` implemented
+- [x] Scanner is stubbed: returns 3–4 hardcoded fake findings after a short delay
+- [x] `BackgroundTasks` drives job status `queued → running → done`
+- [x] Frontend: input card (3 tabs), submit, poll status, render report with fake findings
+- [x] Severity badges, expandable rows, risk score all render from fake data
+- [x] **Commit** — *demoable: full UX works end to end*
 
 ### Phase 2 — Ingestion
 - [ ] Paste → write to temp sandbox dir
@@ -322,6 +322,8 @@ Target 10–15 shipped rules. These three (XSS sink, SQL concat, frontend secret
 
 > Append a dated entry after each work session. Most recent at top.
 
+- 2026-10-21 — Phase 1 done. `POST /scan` (multipart form), `GET /scan/{id}/status`, `GET /scan/{id}`; stubbed pipeline walks the stage list with a delay and stores 4 fake findings; `scoring.py` (final formula: risk 0–100 + A–F grade) is already in. Frontend: 3-tab input card (paste with optional filename / zip dropzone / GitHub URL), "Try the demo app" button, polling progress list, report with grade, risk score count-up, severity counts, expandable finding cards with severity rail. Report URL is `#/scan/<id>`, so it survives refresh and can be shared. Verified in headless Chromium at 1280px and 390px. Fixed: stub reused finding ids, so a second scan failed on the UNIQUE constraint — the failed state rendered correctly, which doubled as an error-state test.
+- 2026-10-21 — Hosting switched to Render free + Firebase Hosting (card-free); §22 rewritten, Trivy dropped from the deployed set. Groq key verified against the live API (`openai/gpt-oss-20b` and `gpt-oss-120b` both listed); stored only in gitignored `backend/.env`.
 - 2026-10-21 — Phase 0 done. FastAPI `/health`, SQLite (`scans` + `findings`, plus report columns used later: `severity_reason`, `impact`, `money_risk`, `confidence`, `reprompt`, `refs`, `evidence`, `triage_note`, and `scans.scanners`/`source_label`), Vite 8 + React 19 + Tailwind 4 shell with dark design tokens, README. All six scanners installed locally (semgrep 1.181, njsscan 1.0.1, gitleaks 8.30.1, retire 6.1.0, osv-scanner 2.7.0, trivy 0.76.0).
 - _2026-10-21 — (Claude Code) initialized project from spec. Starting Phase 0._
 
@@ -335,6 +337,8 @@ Target 10–15 shipped rules. These three (XSS sink, SQL concat, frontend secret
 - **2026-10-21 — LLM = Groq.** OpenAI-compatible endpoint; default model `openai/gpt-oss-20b` (Groq retired the Llama models from free/dev tiers in Aug 2026). Kept behind the `triage()` abstraction so local Ollama/Gemma can replace it.
 - ~~**2026-10-21 — Hosting = Cloud Run, single container.**~~ *Superseded the same day — see next entry.* The deliverable is one public URL, so a local tunnel won't do. One Docker image (FastAPI serving the React build + the scan API, all six scanners baked in) deploys to Cloud Run with `--memory 2Gi`. Clean `*.web.app` link via Firebase Hosting rewrite to the Cloud Run service. Scanner DBs pre-baked into the image. (See §22.)
 - **2026-10-21 — Hosting = Render free (API) + Firebase Hosting Spark (UI), card-free.** No payment method is available, and we still want a clean link. Cloud Run (+ Firebase rewrite) needs a card; Hugging Face free Docker Spaces became PRO-only in July 2026. Render's free tier runs a Docker container with no card; Firebase Spark gives `*.web.app` with no card. Consequences: (1) the container is API-only and the React app calls it cross-origin via build-time `VITE_API_BASE_URL`, with CORS limited to the Firebase origins (`ALLOWED_ORIGINS`), never `*`; (2) Render free is 512 MB RAM / 0.1 CPU, so **Trivy is dropped**, the image ships semgrep + gitleaks + osv-scanner + njsscan, scanners run sequentially, one scan at a time, with pre-downloaded trimmed semgrep rules; (3) the service sleeps after 15 min idle, so the UI shows a wake-up state. Any spec text that still implies Cloud Run or a single image serving the UI is overridden by §22.
+- **2026-10-21 — `POST /scan` takes `multipart/form-data`** (`source_type`, `payload`, optional `filename`), so one format covers code strings, zip uploads and URLs. `source_type` also accepts `demo` (scans the bundled `sample-repo/`).
+- **2026-10-21 — Progress is a step list, not just a stage string.** `scans.steps` (JSON) holds `{key, label, state, note}` per pipeline step/scanner; the UI renders it live, and the report reuses it for "what was checked" and skipped-scanner notes. `stage` stays as the human-readable current step.
 
 ---
 

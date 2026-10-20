@@ -17,6 +17,12 @@
   --color-high: #f38b3c;
   --color-med: #e5b53a;
   --color-low: #5aa2f0;
+  --color-fix: #62c98f;
+}
+
+@keyframes rise {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
 }
 
 html {
