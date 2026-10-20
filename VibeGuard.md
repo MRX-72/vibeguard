@@ -36,6 +36,7 @@
 | Frontend | React (Vite) + Tailwind CSS | Single dashboard page |
 | Database | SQLite | Zero-config, one file |
 | Jobs | FastAPI `BackgroundTasks` + frontend polling | No external queue needed for MVP |
+| Hosting | Render free (API container) + Firebase Hosting Spark (UI) | Card-free; see §22 |
 | Scanners | `semgrep`, `njsscan`, `gitleaks`, `retire.js`, `osv-scanner`, `trivy` (all CLI) | See §2.1 — chosen for the vibe-coded stack |
 | LLM triage | One `triage()` function on **Groq** (OpenAI-compatible API), swappable to local | Groq for fast/cheap inference; abstraction keeps a local-model escape hatch |
 
@@ -295,10 +296,12 @@ Target 10–15 shipped rules. These three (XSS sink, SQL concat, frontend secret
   - [ ] Confidence / reachability badge per finding (see §16)
   - [ ] Export: Markdown + SARIF (shareable report)
 - [ ] Built-in **"Try a demo repo"** button scans the bundled sample (§12)
-- [ ] **Deploy (see §22) — the submission is one working public URL:**
-  - [ ] One Docker image: FastAPI serves the API + the built React app; all six scanners baked in with DBs pre-cached
-  - [ ] Backend on Cloud Run (`--memory 2Gi`, binds `0.0.0.0:$PORT`)
-  - [ ] Clean link via Firebase Hosting rewrite to the Cloud Run service (`*.web.app`), or a custom domain
+- [ ] **Deploy (see §22) — the submission is one working public URL, card-free:**
+  - [ ] API-only Docker image on Render free: core scanners (semgrep, gitleaks, osv-scanner, njsscan) + pre-downloaded semgrep rules; binds `0.0.0.0:$PORT`
+  - [ ] Scanners run sequentially, one scan at a time (512 MB RAM); demo scan timed on the 0.1 CPU instance
+  - [ ] CORS restricted to the Firebase origins via `ALLOWED_ORIGINS`
+  - [ ] React build with `VITE_API_BASE_URL` → Firebase Hosting (Spark) at `*.web.app`
+  - [ ] "Waking the scanner…" state while the Render service cold-starts
   - [ ] Public URL verified from a device that is **not** the dev's machine
   - [ ] Service warmed right before submitting (cold-start guard)
 - [ ] **Commit + tag `v1.0-demo`**
@@ -330,7 +333,8 @@ Target 10–15 shipped rules. These three (XSS sink, SQL concat, frontend secret
 
 - **2026-10-21 — Scanner selection.** Core set is semgrep + njsscan + gitleaks + osv-scanner, with retire.js + trivy as additive, chosen to cover the JS/TS + React/Next + Supabase/Firebase + Node stack that vibe-coding tools generate. retire.js/trivy overlap the core set on deps/secrets and are optional for the MVP.
 - **2026-10-21 — LLM = Groq.** OpenAI-compatible endpoint; default model `openai/gpt-oss-20b` (Groq retired the Llama models from free/dev tiers in Aug 2026). Kept behind the `triage()` abstraction so local Ollama/Gemma can replace it.
-- **2026-10-21 — Hosting = Cloud Run, single container.** The deliverable is one public URL, so a local tunnel won't do. One Docker image (FastAPI serving the React build + the scan API, all six scanners baked in) deploys to Cloud Run with `--memory 2Gi`. Clean `*.web.app` link via Firebase Hosting rewrite to the Cloud Run service. Scanner DBs pre-baked into the image. (See §22.)
+- ~~**2026-10-21 — Hosting = Cloud Run, single container.**~~ *Superseded the same day — see next entry.* The deliverable is one public URL, so a local tunnel won't do. One Docker image (FastAPI serving the React build + the scan API, all six scanners baked in) deploys to Cloud Run with `--memory 2Gi`. Clean `*.web.app` link via Firebase Hosting rewrite to the Cloud Run service. Scanner DBs pre-baked into the image. (See §22.)
+- **2026-10-21 — Hosting = Render free (API) + Firebase Hosting Spark (UI), card-free.** No payment method is available, and we still want a clean link. Cloud Run (+ Firebase rewrite) needs a card; Hugging Face free Docker Spaces became PRO-only in July 2026. Render's free tier runs a Docker container with no card; Firebase Spark gives `*.web.app` with no card. Consequences: (1) the container is API-only and the React app calls it cross-origin via build-time `VITE_API_BASE_URL`, with CORS limited to the Firebase origins (`ALLOWED_ORIGINS`), never `*`; (2) Render free is 512 MB RAM / 0.1 CPU, so **Trivy is dropped**, the image ships semgrep + gitleaks + osv-scanner + njsscan, scanners run sequentially, one scan at a time, with pre-downloaded trimmed semgrep rules; (3) the service sleeps after 15 min idle, so the UI shows a wake-up state. Any spec text that still implies Cloud Run or a single image serving the UI is overridden by §22.
 
 ---
 
@@ -369,9 +373,11 @@ TRIAGE_BACKEND=groq               # or: local
 GROQ_API_KEY=...                  # required if groq
 GROQ_MODEL=openai/gpt-oss-20b     # groq model id; verify at console.groq.com/docs/models
 OLLAMA_URL=http://localhost:11434 # required if local
-PORT=8080                         # Cloud Run injects this; the app MUST bind 0.0.0.0:$PORT
+PORT=10000                        # Render injects this; the app MUST bind 0.0.0.0:$PORT
+ALLOWED_ORIGINS=http://localhost:5173   # prod: https://vibeguard.web.app,https://vibeguard.firebaseapp.com
+VITE_API_BASE_URL=                # frontend build-time; the Render URL in prod, empty in dev (Vite proxy)
 ```
-On Cloud Run, set `GROQ_API_KEY`, `GROQ_MODEL`, and `TRIAGE_BACKEND` as service env vars / secrets — never baked into the image. Full deploy details in §22.
+On Render, set `GROQ_API_KEY`, `GROQ_MODEL`, `TRIAGE_BACKEND`, and `ALLOWED_ORIGINS` as service env vars — never baked into the image. Locally they live in the gitignored `backend/.env`. Full deploy details in §22.
 
 **System dependencies** (install and verify on PATH at startup; if any is missing, skip that scanner gracefully and note it in the report rather than crashing):
 - `semgrep` — `pip install semgrep`
@@ -516,78 +522,63 @@ Developers will not upload proprietary code to a tool they don't trust — so tr
 
 ## 22. Hosting & deployment (the submission is one public URL)
 
-**The constraint that drives everything here:** the deliverable is a single link that must work when a judge clicks it, with none of the developer's machines running. A local tunnel (ngrok/cloudflared) therefore does **not** qualify — the backend must live on an always-reachable host. **Target: Google Cloud Run** — serverless containers, an always-free allowance, it runs the scanner binaries, and it scales to zero.
+**The constraints that drive everything here:** the deliverable is a single link that must work when a judge clicks it, with none of the developer's machines running, **and no payment method is available**. A local tunnel (ngrok/cloudflared) does not qualify. Cloud Run (+ Firebase rewrite) needs a card, and Hugging Face free Docker Spaces became PRO-only in July 2026, so both are out. **Target: Render free (backend) + Firebase Hosting Spark (frontend)** — both card-free.
 
 ### Topology
 
-Ship **one Docker image**: FastAPI serves both the built React app (at `/`) and the scan API (at `/scan`). That single image is the whole product, and it deploys to Cloud Run as one service.
+```
+ browser ──► https://vibeguard.web.app        Firebase Hosting (Spark, free)   React build only
+    │
+    └─── fetch(VITE_API_BASE_URL + "/scan…") ──► https://<svc>.onrender.com   Render free web service
+                                                  (Docker: FastAPI + scanners, API only)
+```
 
-- **Backend → Cloud Run** → gives a working HTTPS URL (`https://vibeguard-xxxx-xx.a.run.app`).
-- **Clean link (the "like Firebase" ask) → use Firebase Hosting in front:**
-  - Host the React build on **Firebase Hosting** (free, gives `https://vibeguard.web.app`).
-  - Add a rewrite in `firebase.json` that proxies API paths to the Cloud Run service, so the browser only ever talks to `vibeguard.web.app` — **same-origin, no CORS**, clean link.
+- **Backend → Render free web service**, one Docker container: FastAPI + scanners. **API only** — it does not serve the React build.
+- **Frontend → Firebase Hosting (Spark)**: the React build, giving the clean `https://vibeguard.web.app` link we submit. `firebase.json` has only the SPA fallback rewrite — Spark can't proxy to Render.
+- **Cross-origin API calls.** The React app calls the Render backend over HTTPS using the build-time env var `VITE_API_BASE_URL` (the `…onrender.com` URL). The backend enables CORS for the Firebase origins only, via `ALLOWED_ORIGINS` (default dev value `http://localhost:5173`). Never `*` — VibeGuard would flag itself.
 
-  ```json
-  // firebase.json
-  { "hosting": {
-      "public": "frontend/dist",
-      "rewrites": [
-        { "source": "/scan/**", "run": { "serviceId": "vibeguard", "region": "<region>" } },
-        { "source": "**", "destination": "/index.html" }
-      ]
-  }}
-  ```
-  With Firebase Hosting in front, the Cloud Run container only needs to serve the API; Firebase serves the UI and owns the clean link. *(Alternative: map a custom domain directly to Cloud Run. Simpler fallback: just use the plain `…run.app` URL — it works, it's only less pretty.)*
+```json
+// firebase.json
+{ "hosting": {
+    "public": "frontend/dist",
+    "rewrites": [ { "source": "**", "destination": "/index.html" } ]
+}}
+```
 
-### Dockerfile (what Claude Code should build)
+### Building around Render free limits (512 MB RAM, 0.1 CPU)
 
-Multi-stage: build the React app with Node, then a Python base that installs all six scanners and **pre-caches their databases at build time** so a cold container never downloads hundreds of MB on a judge's first click.
+- **Trivy is dropped.** It's the memory hog and needs a large DB. The container ships the lean core set: **semgrep + gitleaks + osv-scanner + njsscan**. Scanner modules stay fail-soft, so anything not installed is skipped and noted in the report.
+- **Scanners run one at a time**, never in parallel, and only **one scan runs at a time** (others queue). Peak memory ≈ the single biggest scanner, not the sum.
+- **Semgrep rules are pre-downloaded into the image** (no registry fetch per scan) and trimmed to the languages the target stack uses, because rule loading dominates semgrep's time at 0.1 CPU. Measure the demo scan on the deployed service; the < 60 s target is the budget.
+- **Keep the 50 MB repo cap** — the filesystem is ephemeral and shares the 512 MB.
+- **Spin-down after 15 min idle, ~1 min to wake.** Firebase serves the UI instantly; on load it pings `/health` and shows a "Waking the scanner…" state until the API answers. Warm it right before judging. 750 free instance-hours/month covers one service running all month, so an external uptime ping during the judging window is an option.
+- **Ephemeral filesystem.** SQLite lives on local disk and reports vanish on spin-down/redeploy. Acceptable: we never persist user code anyway.
+- **`PORT`.** Render injects `PORT` (default `10000`); the app must bind `0.0.0.0:$PORT`.
+
+### Dockerfile (API only)
 
 ```dockerfile
-# 1) build frontend
-FROM node:20 AS web
-WORKDIR /web
-COPY frontend/ .
-RUN npm ci && npm run build                 # -> /web/dist
-
-# 2) runtime with scanners
 FROM python:3.12-slim
-RUN apt-get update && apt-get install -y --no-install-recommends curl git nodejs npm \
- && pip install --no-cache-dir semgrep njsscan \
- && npm i -g retire \
- && curl -sSfL <gitleaks release url>    -o /usr/local/bin/gitleaks    && chmod +x /usr/local/bin/gitleaks \
- && curl -sSfL <osv-scanner release url> -o /usr/local/bin/osv-scanner && chmod +x /usr/local/bin/osv-scanner \
- && curl -sSfL <trivy install script>    | sh -s -- -b /usr/local/bin
-# pre-cache vuln DBs / rules at BUILD time, not runtime
-RUN trivy image --download-db-only
+RUN apt-get update && apt-get install -y --no-install-recommends git curl ca-certificates
+# semgrep and njsscan in separate venvs (njsscan pins its own semgrep)
+# gitleaks + osv-scanner: pinned release binaries
+# semgrep rule packs downloaded at BUILD time into rules/
 WORKDIR /app
 COPY backend/ .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY --from=web /web/dist ./static          # FastAPI serves these at /
-ENV PORT=8080
-CMD ["sh","-c","uvicorn main:app --host 0.0.0.0 --port ${PORT}"]
+CMD ["sh","-c","uvicorn main:app --host 0.0.0.0 --port ${PORT:-10000}"]
 ```
-*(Pin exact release versions/URLs for gitleaks, osv-scanner, and trivy.)*
+*(Pin exact versions/URLs for every scanner.)*
 
 ### Deploy
 
-```
-gcloud run deploy vibeguard \
-  --source . --region <region> \
-  --allow-unauthenticated \
-  --memory 2Gi --cpu 1 --timeout 300
-```
+1. Push the repo to GitHub.
+2. **Render:** New → Blueprint (`render.yaml`, plan `free`, runtime `docker`). Set `GROQ_API_KEY` (secret), `GROQ_MODEL`, `TRIAGE_BACKEND=groq`, `ALLOWED_ORIGINS=https://vibeguard.web.app,https://vibeguard.firebaseapp.com`.
+3. **Firebase:** `cd frontend && VITE_API_BASE_URL=https://<svc>.onrender.com npm run build`, then `firebase deploy --only hosting`.
+4. Open `https://vibeguard.web.app` from a phone (not the dev machine) and run the demo scan.
 
-### Cloud Run gotchas (each has bitten someone)
-
-- **Bind `0.0.0.0:$PORT`.** Cloud Run injects `PORT` (8080). If the app hardcodes a port or binds `localhost`, the deploy "succeeds" but every request fails.
-- **Memory.** Cloud Run's filesystem is in-memory — the cloned repo *and* Trivy's DB count against RAM. 512 MB will OOM; use **2 GiB**, and keep the 50 MB repo cap.
-- **Cold starts.** It scales to zero, so the first click after idle waits a few seconds. For judging: warm it right before submitting, show a "waking the scanner…" state in the UI, and optionally `--min-instances 1` during the judging window (a warm instance can exceed the always-free allowance, so set it back to 0 afterward).
-- **Timeout.** 300s request timeout is the budget a scan must finish within — run scanners in parallel and cap repo size.
-- **DBs must be pre-baked** (above), or the first scan is slow or fails.
-
-### Env on Cloud Run
-Set `GROQ_API_KEY`, `GROQ_MODEL`, and `TRIAGE_BACKEND=groq` as service env vars / secrets — never baked into the image.
+### Env on Render
+Set `GROQ_API_KEY`, `GROQ_MODEL`, `TRIAGE_BACKEND`, and `ALLOWED_ORIGINS` as service env vars — never baked into the image. `VITE_API_BASE_URL` is a frontend **build-time** var (it's a public URL, not a secret).
 
 ---
 
