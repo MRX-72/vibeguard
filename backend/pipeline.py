@@ -35,7 +35,7 @@ def run_scan(scan_id, source_type, payload, label=None):
                 work.mkdir()
                 raw = []
                 for scanner in SCANNERS:
-                    raw += _run_one(scan_id, scanner, root, work, steps)
+                    raw += _run_one(scan_id, scanner(), root, work, steps)
                 if not any(s["state"] == "done" for s in steps[1:]):
                     # an empty report here would read as "all clear", which would be a lie
                     raise ingest.IngestError("None of the scanners could run on this server, so nothing was checked. Try again later.")
@@ -67,14 +67,15 @@ def _run_one(scan_id, scanner, root, work, steps):
         log.exception("%s crashed", scanner.name)
         _set(steps, scanner.name, "failed", "didn't finish (unexpected error)")
         return []
-    _set(steps, scanner.name, "done", f"{len(found)} finding{'s' * (len(found) != 1)}")
+    _set(steps, scanner.name, "done", f"{len(found)} finding{'s' * (len(found) != 1)}", checked=scanner.checked)
     return found
 
 
-def _set(steps, key, state, note=None):
+def _set(steps, key, state, note=None, **extra):
     for s in steps:
         if s["key"] == key:
             s["state"] = state
             if note:
                 s["note"] = note
+            s.update({k: v for k, v in extra.items() if v})
     return steps

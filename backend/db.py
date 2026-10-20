@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS findings (
   file TEXT,
   line INTEGER,
   code_snippet TEXT,
+  snippet_start INTEGER,
   raw_rule_id TEXT,
   explanation TEXT,
   fix_diff TEXT,

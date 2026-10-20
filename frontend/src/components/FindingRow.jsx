@@ -39,7 +39,9 @@ export default function FindingRow({ finding: f, index }) {
             <p className="text-sm leading-relaxed text-muted"><span className="text-faint">Why {f.severity.toLowerCase()}: </span>{f.severity_reason}</p>
           )}
           {f.explanation && <p className="leading-relaxed text-muted text-pretty">{f.explanation}</p>}
-          {f.code_snippet && <Code label={where || 'Evidence'} code={f.code_snippet} />}
+          {f.code_snippet && (
+            <Code label={where || 'Evidence'} code={f.code_snippet} start={f.snippet_start} from={f.line} to={f.end_line || f.line} />
+          )}
           {f.evidence?.length > 0 && (
             <div>
               <p className="mb-2 text-sm text-muted">{f.kind === 'dependency' ? 'Advisories' : 'How the data gets there'}</p>
@@ -74,19 +76,25 @@ function refLabel(url) {
   }
 }
 
-function Code({ label, code, diff }) {
+function Code({ label, code, diff, start, from, to }) {
+  const numbered = start > 0
   return (
     <figure>
       <figcaption className="mb-2 font-mono text-[12.5px] text-faint">{label}</figcaption>
       <pre className="overflow-x-auto rounded-md border border-line bg-ink py-3 font-mono text-[12.5px] leading-relaxed">
-        {code.split('\n').map((line, i) => (
-          <div
-            key={i}
-            className={`px-3 ${diff && line.startsWith('+') ? 'bg-fix/10 text-fix' : diff && line.startsWith('-') ? 'bg-crit/10 text-crit' : ''}`}
-          >
-            {line || ' '}
-          </div>
-        ))}
+        {code.split('\n').map((line, i) => {
+          const n = start + i
+          const hit = numbered && n >= from && n <= to
+          const tone = diff && line.startsWith('+') ? 'bg-fix/10 text-fix' : diff && line.startsWith('-') ? 'bg-crit/10 text-crit' : hit ? 'bg-fg/[0.06]' : numbered ? 'text-muted' : ''
+          return (
+            <div key={i} className={`flex min-w-max ${tone}`}>
+              {numbered && (
+                <span className={`w-12 shrink-0 pr-4 text-right select-none ${hit ? 'text-fg' : 'text-faint'}`} aria-hidden>{n}</span>
+              )}
+              <span className={numbered ? 'pr-4' : 'px-3'}>{line || ' '}</span>
+            </div>
+          )
+        })}
       </pre>
     </figure>
   )

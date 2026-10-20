@@ -103,7 +103,7 @@ def _clone(url, root):
             env=env, capture_output=True, text=True, timeout=90,
         )
     except subprocess.TimeoutExpired:
-        raise IngestError("Cloning took too long. The repository is probably over the 50 MB limit.")
+        raise IngestError("Cloning took too long. The repository is probably over the 50 MB limit.") from None
     if r.returncode != 0:
         raise IngestError("Couldn't clone that repository. Check the URL. Only public repositories are supported.")
     shutil.rmtree(root / ".git", ignore_errors=True)

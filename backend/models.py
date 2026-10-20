@@ -17,6 +17,7 @@ class Finding(BaseModel):
     file: str = ""
     line: int = 0
     code_snippet: str = ""
+    snippet_start: int = 0  # line number of the snippet's first line (it includes context around line..end_line)
     raw_rule_id: str = ""
     explanation: str = ""
     fix_diff: str = ""

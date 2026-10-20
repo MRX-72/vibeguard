@@ -17,7 +17,7 @@ export default function ScanProgress({ status }) {
               {s.label}
             </span>
             {s.tool && <span className="text-sm text-faint">{s.tool}</span>}
-            {s.note && <span className="ml-auto text-sm text-faint">{s.note}</span>}
+            {s.note && <span className="ml-auto text-sm text-faint">{s.note}{s.checked ? ` in ${s.checked}` : ''}</span>}
           </li>
         ))}
       </ol>

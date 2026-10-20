@@ -66,9 +66,10 @@ export default function Report({ report }) {
 }
 
 function useCountUp(target, ms = 700) {
-  const [n, setN] = useState(0)
+  const [still] = useState(() => matchMedia('(prefers-reduced-motion: reduce)').matches)
+  const [n, setN] = useState(still ? target : 0)
   useEffect(() => {
-    if (matchMedia('(prefers-reduced-motion: reduce)').matches) return setN(target)
+    if (still) return
     let raf
     const t0 = performance.now()
     const step = (t) => {
@@ -78,6 +79,6 @@ function useCountUp(target, ms = 700) {
     }
     raf = requestAnimationFrame(step)
     return () => cancelAnimationFrame(raf)
-  }, [target, ms])
-  return n
+  }, [target, ms, still])
+  return still ? target : n
 }

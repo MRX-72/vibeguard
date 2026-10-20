@@ -52,7 +52,7 @@ async def create_scan(request: Request, background: BackgroundTasks):
     except ingest.IngestError as e:
         if isinstance(payload, Path):
             payload.unlink(missing_ok=True)
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from None
     if source_type == "zip":
         label = getattr(form.get("payload"), "filename", None) or "upload.zip"
     scan_id = str(uuid4())

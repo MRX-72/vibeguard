@@ -3,7 +3,7 @@
 import re
 
 from models import SEVERITIES, Finding
-from scanners.base import mask, mask_in, worst
+from scanners.base import TEST_PATH, lower, mask, mask_in, worst
 
 # Which scanner's version of a duplicate we keep (first wins): the most specific source, with the most precise line.
 PRIORITY = ["custom", "gitleaks", "semgrep", "njsscan", "osv-scanner", "retire.js"]
@@ -76,7 +76,11 @@ def normalize(findings: list[Finding]) -> list[Finding]:
             _absorb(dup, f)
         else:
             merged.append(f)
+    merged = _group_repeats(merged)
     for f in merged:
+        if f.kind in ("code", "config") and TEST_PATH.search(f.file) and not f.is_false_positive:
+            f.severity, f.confidence = lower(f.severity), "Needs review"
+            f.triage_note = (f.triage_note + " This is test code, which doesn't ship to users.").strip()
         _mask(f, secrets)
         _plain(f)
     merged.sort(key=lambda f: (f.is_false_positive, SEVERITIES.index(f.severity), CONFIDENCE.index(f.confidence), f.file, f.line))
@@ -85,6 +89,34 @@ def normalize(findings: list[Finding]) -> list[Finding]:
 
 def _rank(f):
     return (PRIORITY.index(f.source) if f.source in PRIORITY else len(PRIORITY), SEVERITIES.index(f.severity))
+
+
+def _group_repeats(findings):
+    """One rule firing on many lines of one file becomes one finding that lists every place."""
+    groups = {}
+    for f in findings:
+        repeatable = f.kind in ("code", "config") and f.raw_rule_id and not f.is_false_positive
+        # code repeats group per file; config hygiene (CI, package managers) groups across the repo
+        key = ((f.raw_rule_id,) if f.kind == "config" else (f.file, f.raw_rule_id)) if repeatable else id(f)
+        groups.setdefault(key, []).append(f)
+    out = []
+    for group in groups.values():
+        group.sort(key=lambda f: (f.file, f.line))
+        keep = group[0]
+        if len(group) > 1:
+            files = {f.file for f in group}
+            keep.severity = worst(*(f.severity for f in group))
+            keep.evidence = [(f"{f.file}:{f.line}" if len(files) > 1 else f"Line {f.line}") + f": {_flagged(f)}" for f in group] + keep.evidence
+            keep.explanation = (f"This shows up in {len(group)} places" + (f" across {len(files)} files. " if len(files) > 1 else f" in {keep.file}. ")
+                                + keep.explanation)
+        out.append(keep)
+    return out
+
+
+def _flagged(f):
+    lines = f.code_snippet.splitlines()
+    i = f.line - (f.snippet_start or f.line)
+    return " ".join(lines[i].split())[:160] if 0 <= i < len(lines) else ""
 
 
 def _overlap(a, b):
@@ -103,8 +135,9 @@ def _same(a, b):
 
 
 def _absorb(keep: Finding, other: Finding):
-    if not keep.is_false_positive:  # a "public by design" verdict on the value outranks a generic rule's severity
-        keep.severity = worst(keep.severity, other.severity)
+    if not keep.is_false_positive and SEVERITIES.index(other.severity) < SEVERITIES.index(keep.severity):
+        # a "public by design" verdict on the value outranks a generic rule's severity; otherwise the worst rating wins, with its reason
+        keep.severity, keep.severity_reason = other.severity, other.severity_reason or keep.severity_reason
     keep.detected_by = list(dict.fromkeys(keep.detected_by + [other.source]))
     keep.cwe = sorted(set(keep.cwe) | set(other.cwe), key=lambda c: int(c[4:]))
     keep.refs = list(dict.fromkeys(keep.refs + other.refs))

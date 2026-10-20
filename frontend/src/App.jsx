@@ -8,9 +8,6 @@ const idFromHash = () => location.hash.match(/^#\/scan\/([\w-]+)/)?.[1] ?? null
 
 export default function App() {
   const [scanId, setScanId] = useState(idFromHash)
-  const [status, setStatus] = useState(null)
-  const [report, setReport] = useState(null)
-  const [error, setError] = useState(null)
 
   useEffect(() => {
     const onHash = () => setScanId(idFromHash())
@@ -18,11 +15,35 @@ export default function App() {
     return () => removeEventListener('hashchange', onHash)
   }, [])
 
+  async function submit(form) {
+    const { scan_id } = await startScan(form)
+    location.hash = `#/scan/${scan_id}`
+  }
+
+  return (
+    <div className="mx-auto max-w-[880px] px-4 pb-24 sm:px-6">
+      <header className="flex items-center justify-between py-6">
+        <a href="#" className="flex items-center gap-2 rounded-md">
+          <img src="/favicon.svg" alt="" className="size-6" />
+          <span className="font-semibold tracking-tight">VibeGuard</span>
+        </a>
+        {scanId && (
+          <a href="#" className="rounded-md px-3 py-1.5 text-sm text-muted hover:bg-raised hover:text-fg">New scan</a>
+        )}
+      </header>
+
+      <main>{scanId ? <ScanView key={scanId} scanId={scanId} /> : <Home onSubmit={submit} />}</main>
+    </div>
+  )
+}
+
+// Keyed by scan id, so switching scans starts from fresh state.
+function ScanView({ scanId }) {
+  const [status, setStatus] = useState(null)
+  const [report, setReport] = useState(null)
+  const [error, setError] = useState(null)
+
   useEffect(() => {
-    setStatus(null)
-    setReport(null)
-    setError(null)
-    if (!scanId) return
     let stopped = false
     const tick = async () => {
       try {
@@ -39,33 +60,10 @@ export default function App() {
     return () => { stopped = true }
   }, [scanId])
 
-  async function submit(form) {
-    const { scan_id } = await startScan(form)
-    location.hash = `#/scan/${scan_id}`
-  }
-
   const failed = error || (status?.status === 'failed' && (status.error || 'The scan stopped unexpectedly.'))
-
-  return (
-    <div className="mx-auto max-w-[880px] px-4 pb-24 sm:px-6">
-      <header className="flex items-center justify-between py-6">
-        <a href="#" className="flex items-center gap-2 rounded-md">
-          <img src="/favicon.svg" alt="" className="size-6" />
-          <span className="font-semibold tracking-tight">VibeGuard</span>
-        </a>
-        {scanId && (
-          <a href="#" className="rounded-md px-3 py-1.5 text-sm text-muted hover:bg-raised hover:text-fg">New scan</a>
-        )}
-      </header>
-
-      <main>
-        {!scanId && <Home onSubmit={submit} />}
-        {scanId && failed && <Failed message={failed} />}
-        {scanId && !failed && report && <Report report={report} />}
-        {scanId && !failed && !report && <ScanProgress status={status} />}
-      </main>
-    </div>
-  )
+  if (failed) return <Failed message={failed} />
+  if (report) return <Report report={report} />
+  return <ScanProgress status={status} />
 }
 
 function Home({ onSubmit }) {

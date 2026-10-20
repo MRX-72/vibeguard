@@ -5,4 +5,5 @@ from .retirejs import RetireJs
 from .semgrep import Semgrep
 
 # Pipeline order (§3): secrets -> dependencies -> static analysis. Trivy is dropped for Render (§22).
-ALL = [Gitleaks(), OsvScanner(), RetireJs(), Semgrep(), Njsscan()]
+# Classes, not instances: each scan gets fresh ones, so per-run state (like `checked`) never leaks between scans.
+ALL = [Gitleaks, OsvScanner, RetireJs, Semgrep, Njsscan]

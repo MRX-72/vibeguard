@@ -7,6 +7,7 @@ from pathlib import Path
 
 import ingest
 import normalize
+import scoring
 from models import Finding
 from scanners import ALL as SCANNERS
 from scanners.base import classify_secret, mask_in
@@ -152,9 +153,59 @@ def test_normalize_dedupes_and_masks():
     assert all(f.impact for f in out)  # never rule-speak without a plain-English line
 
 
+def test_scoring():
+    crit = _f(severity="Critical", confidence="Likely")
+    assert scoring.risk_score([crit]) == 55 and scoring.grade(55) == "D"
+    assert scoring.risk_score([crit, _f(severity="Critical")]) == 80 and scoring.grade(80) == "F"
+    assert scoring.risk_score([_f(severity="Critical", confidence="Needs review")]) == 28  # unconfirmed counts half
+    assert scoring.risk_score([_f(severity="High", is_false_positive=True)]) == 0 and scoring.grade(0) == "A"
+    assert scoring.grade(25) == "B" and scoring.grade(26) == "C"
+
+
+def test_semgrep_policy():
+    """Curated rule verdicts: noise is filtered, hygiene is Low, Actions injection is judged by its inputs."""
+    from scanners.semgrep import Semgrep
+    root = Path(tempfile.mkdtemp())
+    (root / "wf.yml").write_text("run: ./x ${{ inputs.mode && '--now' || '' }}\nrun: echo ${{ github.event.issue.title }}\n")
+    (root / "a.js").write_text("console.log(`user ${id}`)\n")
+    res = lambda rule, file, line, sev="ERROR", meta=None: {
+        "check_id": rule, "path": str(root / file), "start": {"line": line}, "end": {"line": line},
+        "extra": {"severity": sev, "message": "m", "metadata": meta or {"likelihood": "HIGH", "impact": "HIGH", "confidence": "HIGH"}}}
+    s = Semgrep()
+    safe = s._finding(root, res("yaml.github-actions.security.run-shell-injection.run-shell-injection", "wf.yml", 1), False)
+    bad = s._finding(root, res("yaml.github-actions.security.run-shell-injection.run-shell-injection", "wf.yml", 2), False)
+    assert safe.severity == "Low" and bad.severity == "Critical"
+    assert s._finding(root, res("javascript.lang.security.audit.unsafe-formatstring.unsafe-formatstring", "a.js", 1), False).is_false_positive
+    csrf = "javascript.express.security.audit.express-check-csurf-middleware-usage.express-check-csurf-middleware-usage"
+    assert s._finding(root, res(csrf, "a.js", 1), uses_cookies=False).is_false_positive
+    assert not s._finding(root, res(csrf, "a.js", 1), uses_cookies=True).is_false_positive
+
+
+def test_npm_dependency_tiers():
+    """Runtime vs. build-only, through the lockfile graph, even when build tools sit in "dependencies"."""
+    from scanners import npm_deps
+    root = Path(tempfile.mkdtemp())
+    (root / "package.json").write_text(json.dumps({"dependencies": {"express": "^4.0.0", "vite": "^5.0.0", "tailwindcss-animate": "1.0.0"},
+                                                   "devDependencies": {"eslint": "^9.0.0"}}))
+    (root / "package-lock.json").write_text(json.dumps({"lockfileVersion": 3, "packages": {
+        "": {}, "node_modules/express": {"dependencies": {"qs": "1"}}, "node_modules/qs": {},
+        "node_modules/vite": {"dependencies": {"nanoid": "3"}}, "node_modules/nanoid": {},
+        "node_modules/tailwindcss-animate": {"peerDependencies": {"tailwindcss": "3"}}, "node_modules/tailwindcss": {"dependencies": {"braces": "3"}},
+        "node_modules/braces": {}, "node_modules/eslint": {"dependencies": {"js-yaml": "4"}}, "node_modules/js-yaml": {"dev": True}}}))
+    p = npm_deps.Project(root)
+    assert p.classify("express") == ("runtime-direct", None)
+    assert p.classify("qs") == ("runtime", "express")
+    for build_only in ["vite", "nanoid", "tailwindcss", "braces", "eslint", "js-yaml"]:
+        assert p.classify(build_only)[0] == "dev", build_only
+    (root / "src").mkdir()
+    (root / "src/app.ts").write_text('import express from "express"\nconst x = require("@scope/pkg/sub")\nimport "./local"\n')
+    assert npm_deps.imported_packages(root) == {"express", "@scope/pkg"}
+    assert npm_deps.min_version("^0.21.1") == "0.21.1" and npm_deps.min_version("latest") is None
+
+
 def test_scanners_on_sample_repo():
     """Integration: whatever scanners are installed must find the planted issues, and never leak a secret."""
-    installed = [s for s in SCANNERS if s.available()]
+    installed = [s for s in (cls() for cls in SCANNERS) if s.available()]
     if not installed:
         print("   (no scanners installed, skipped)")
         return

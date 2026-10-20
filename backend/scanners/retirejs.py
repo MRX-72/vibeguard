@@ -1,8 +1,6 @@
-import json
-
 from models import Finding
 
-from .base import Scanner, rel, worst
+from .base import Scanner, read_json, rel, worst
 from .versions import newest
 
 SEV = {"critical": "Critical", "high": "High", "medium": "Medium", "low": "Low"}
@@ -18,7 +16,7 @@ class RetireJs(Scanner):
     def run(self, root, work):
         out = work / "retire.json"
         self.exec([self.binary, "--outputformat", "json", "--outputpath", str(out), "--path", str(root), "--exitwith", "0"])
-        data = json.loads(out.read_text() or "{}")
+        data = read_json(out, {})
         return [self._finding(root, item["file"], res) for item in data.get("data", []) for res in item.get("results", []) if res.get("vulnerabilities")]
 
     def _finding(self, root, path, res):
@@ -32,7 +30,7 @@ class RetireJs(Scanner):
             title=f"{name} {version} has {n} known vulnerabilit{'y' if n == 1 else 'ies'}",
             file=rel(root, path), line=0, raw_rule_id=ids[0],
             cwe=sorted({c for v in vulns for c in v.get("cwe", [])}),
-            evidence=[f"{i} ({SEV.get(v.get('severity'), 'Medium')}): {v['identifiers'].get('summary', '').strip()}"[:240] for i, v in zip(ids, vulns)],
+            evidence=[f"{i} ({SEV.get(v.get('severity'), 'Medium')}): {v['identifiers'].get('summary', '').strip()}"[:240] for i, v in zip(ids, vulns, strict=True)],
             refs=[u for v in vulns for u in v.get("info", [])][:4],
             explanation=f"This file is a copy of {name} {version}. Published advisories affect this version"
                         + (f"; {fix} fixes {'it' if n == 1 else 'them'}." if fix else "."),

@@ -31,6 +31,7 @@ class Scanner:
     binary = ""
     label = ""  # the user-facing step name
     timeout = 180
+    checked = ""  # what this run looked at, for the report ("412 source files"); one instance per scan
 
     def available(self):
         return shutil.which(self.binary) is not None
@@ -47,7 +48,7 @@ class Scanner:
         except subprocess.TimeoutExpired:
             os.killpg(p.pid, signal.SIGKILL)
             p.communicate()
-            raise ScannerError(f"timed out after {self.timeout}s")
+            raise ScannerError(f"timed out after {self.timeout}s") from None
         r = subprocess.CompletedProcess(args, p.returncode, out, err)
         if r.returncode not in ok:
             log.warning("%s exited %s: %s", self.name, r.returncode, r.stderr[-800:])
@@ -63,17 +64,32 @@ def rel(root, path):
         return p.as_posix()
 
 
-def snippet(root, file, line, end=None, max_lines=8, max_cols=240):
-    """The flagged lines, read from disk (semgrep OSS no longer returns them)."""
+def snippet(root, file, line, end=None, context=2, max_lines=12, max_cols=240):
+    """(text, first line number): the flagged lines plus `context` lines around them, read from disk
+    (semgrep OSS no longer returns them). Pass context=0 for secrets: neighbouring .env lines are often secrets too."""
     if not line:
-        return ""
+        return "", 0
     try:
         lines = (root / file).read_text(errors="replace").splitlines()
     except OSError:
-        return ""
+        return "", 0
     end = min(max(end or line, line), line + max_lines - 1)
-    picked = [ln if len(ln) <= max_cols else ln[:max_cols] + "…" for ln in lines[line - 1 : end]]
-    return textwrap.dedent("\n".join(picked)).strip("\n")
+    start = max(1, line - context)
+    stop = min(len(lines), end + context, start + max_lines - 1)
+    picked = [ln if len(ln) <= max_cols else ln[:max_cols] + "…" for ln in lines[start - 1 : stop]]
+    return textwrap.dedent("\n".join(picked)).rstrip(), start
+
+
+def read_json(path, default):
+    """A scanner's JSON report; a half-written or garbled one is a scanner failure, not a crash."""
+    try:
+        text = path.read_text()
+    except OSError:
+        return default
+    try:
+        return json.loads(text) if text.strip() else default
+    except ValueError:
+        raise ScannerError("wrote an unreadable report") from None
 
 
 def humanize(rule_id):
@@ -109,43 +125,41 @@ def from_cvss(score):
 # --- secrets -----------------------------------------------------------------
 
 PLACEHOLDER = re.compile(
-    r"(?i)^(<.*>|\$\{.*\}|\{\{.*\}\}|x{4,}|\*{4,}|0{6,}|(your|my|insert|enter|replace)[-_ ].*|.*(example|placeholder|changeme|change[-_]me|dummy|redacted|sample).*)$"
+    r"(?i)^(<.*>|\$\{.*\}|\{\{.*\}\}|x{4,}|\*{4,}|0{6,}|(your|my|insert|enter|replace)[-_ ].*|.*(example|placeholder|changeme|change[-_]me|dummy|redacted|sample|fake|this[-_ ]?is[-_ ]?(a|not)|not[-_ ]?(a[-_ ]?)?real|for[-_ ]?testing).*)$"
 )
 TEST_PATH = re.compile(r"(?i)(^|/)(tests?|__tests__|spec|fixtures?|mocks?|examples?|samples?)(/|$)|\.(test|spec|example|sample)\.|\.example$|\.sample$")
 
-BILL = "Anyone who finds this key can use your {what} account on your bill, or drain its quota."
-# (prefix, what it is, severity, costs money if abused)
-KEY_PREFIXES = [
-    ("sk-ant-", "Anthropic API key", "High", True),
-    ("sk-proj-", "OpenAI API key", "High", True),
-    ("sk-svcacct-", "OpenAI API key", "High", True),
-    ("sk-or-", "OpenRouter API key", "High", True),
-    ("gsk_", "Groq API key", "High", True),
-    ("sk_live_", "Stripe live secret key", "Critical", True),
-    ("rk_live_", "Stripe live restricted key", "Critical", True),
-    ("sk_test_", "Stripe test key", "Low", False),
-    ("AKIA", "AWS access key", "Critical", True),
-    ("ASIA", "AWS temporary access key", "High", True),
-    ("ghp_", "GitHub personal access token", "High", False),
-    ("github_pat_", "GitHub personal access token", "High", False),
-    ("xoxb-", "Slack bot token", "High", False),
-    ("xoxp-", "Slack user token", "High", False),
-    ("SG.", "SendGrid API key", "High", True),
-    ("AIza", "Google API key", "Low", True),
-    ("sk-", "OpenAI API key", "High", True),
-]
-
-
-IMPACT = {
-    "sk_live_": "Anyone with this key can issue refunds, read customer and payment data, and move money in your Stripe account.",
-    "rk_live_": "Anyone with this key can use your Stripe account with whatever permissions the key has.",
-    "AKIA": "Anyone with this key can use your AWS account: read your data, run servers on your bill, or delete resources.",
-    "ghp_": "Anyone with this token can read and change your GitHub repositories.",
-    "github_pat_": "Anyone with this token can read and change your GitHub repositories.",
-    "xoxb-": "Anyone with this token can read and post messages in your Slack workspace.",
-    "xoxp-": "Anyone with this token can act as you in your Slack workspace.",
-    "AIza": "If this key isn't restricted, anyone can use Google APIs (like Maps or Gemini) and bill them to your project.",
+# prefix -> (what it is, severity, billed to you if abused, env var to move it to, where to rotate it, impact)
+PROVIDERS = {
+    "sk-ant-": ("Anthropic API key", "High", True, "ANTHROPIC_API_KEY", "https://console.anthropic.com/settings/keys", None),
+    "sk-proj-": ("OpenAI API key", "High", True, "OPENAI_API_KEY", "https://platform.openai.com/api-keys", None),
+    "sk-svcacct-": ("OpenAI API key", "High", True, "OPENAI_API_KEY", "https://platform.openai.com/api-keys", None),
+    "sk-or-": ("OpenRouter API key", "High", True, "OPENROUTER_API_KEY", "https://openrouter.ai/settings/keys", None),
+    "gsk_": ("Groq API key", "High", True, "GROQ_API_KEY", "https://console.groq.com/keys", None),
+    "sk_live_": ("Stripe live secret key", "Critical", True, "STRIPE_SECRET_KEY", "https://dashboard.stripe.com/apikeys",
+                 "Anyone with this key can issue refunds, read customer and payment data, and move money in your Stripe account."),
+    "rk_live_": ("Stripe live restricted key", "Critical", True, "STRIPE_SECRET_KEY", "https://dashboard.stripe.com/apikeys",
+                 "Anyone with this key can use your Stripe account with whatever permissions the key has."),
+    "sk_test_": ("Stripe test key", "Low", False, "STRIPE_SECRET_KEY", "https://dashboard.stripe.com/test/apikeys",
+                 "Test keys can't move real money, but they expose your test data and settings."),
+    "AKIA": ("AWS access key", "Critical", True, "AWS_ACCESS_KEY_ID", "https://console.aws.amazon.com/iam/home#/security_credentials",
+             "Anyone with this key can use your AWS account: read your data, run servers on your bill, or delete resources."),
+    "ASIA": ("AWS temporary access key", "High", True, "AWS_ACCESS_KEY_ID", "https://console.aws.amazon.com/iam/home#/security_credentials", None),
+    "ghp_": ("GitHub personal access token", "High", False, "GITHUB_TOKEN", "https://github.com/settings/tokens",
+             "Anyone with this token can read and change your GitHub repositories."),
+    "github_pat_": ("GitHub personal access token", "High", False, "GITHUB_TOKEN", "https://github.com/settings/tokens",
+                    "Anyone with this token can read and change your GitHub repositories."),
+    "xoxb-": ("Slack bot token", "High", False, "SLACK_BOT_TOKEN", "https://api.slack.com/apps",
+              "Anyone with this token can read and post messages in your Slack workspace."),
+    "xoxp-": ("Slack user token", "High", False, "SLACK_USER_TOKEN", "https://api.slack.com/apps",
+              "Anyone with this token can act as you in your Slack workspace."),
+    "SG.": ("SendGrid API key", "High", True, "SENDGRID_API_KEY", "https://app.sendgrid.com/settings/api_keys",
+            "Anyone with this key can send email as you, which gets your domain flagged as spam and burns your quota."),
+    "AIza": ("Google API key", "Low", True, "GOOGLE_API_KEY", "https://console.cloud.google.com/apis/credentials",
+             "If this key isn't restricted, anyone can use Google APIs (like Maps or Gemini) and bill them to your project."),
+    "sk-": ("OpenAI API key", "High", True, "OPENAI_API_KEY", "https://platform.openai.com/api-keys", None),
 }
+SUPABASE_KEYS = "https://supabase.com/dashboard/project/_/settings/api-keys"
 
 
 def mask(secret):
@@ -172,12 +186,12 @@ def jwt_claims(token):
 
 
 def classify_secret(value, file="", rule=""):
-    """What kind of secret this is. Returns dict(title, severity, money_risk, false_positive, note)."""
+    """What kind of secret this is and what to do about it.
+    Returns dict(title, what, severity, money_risk, false_positive, note, impact, reason, env_var, rotate)."""
     value = value.strip().strip("'\"")
-    out = {"title": f"Exposed {humanize(rule)}" if rule else "Exposed secret", "severity": "High",
-           "money_risk": False, "false_positive": False, "note": "", "impact": "", "reason": ""}
-    if rule in ("generic-api-key", ""):
-        out["title"] = "Hardcoded API key"
+    out = {"title": f"Exposed {humanize(rule)}" if rule and rule != "generic-api-key" else "Hardcoded API key",
+           "what": "this secret", "severity": "High", "money_risk": False, "false_positive": False, "note": "",
+           "impact": "", "reason": "", "env_var": "API_KEY", "rotate": ""}
     if len(value) < 8 or PLACEHOLDER.match(value):
         return out | {"false_positive": True, "note": "This looks like a placeholder, not a real secret."}
 
@@ -185,23 +199,29 @@ def classify_secret(value, file="", rule=""):
     if claims is not None:
         role = claims.get("role")
         if role == "service_role":
-            return out | {"title": "Supabase service_role key exposed", "severity": "Critical",
-                          "reason": "service_role keys bypass Row-Level Security entirely.",
-                          "impact": "Anyone who finds this key can read, change or delete every row in your Supabase database. Row-Level Security doesn't apply to it."}
+            return _in_tests(file, out | {
+                "title": "Supabase service_role key exposed", "what": "the Supabase service_role key", "severity": "Critical",
+                "reason": "service_role keys bypass Row-Level Security entirely.", "env_var": "SUPABASE_SERVICE_ROLE_KEY",
+                "rotate": SUPABASE_KEYS,
+                "impact": "Anyone who finds this key can read, change or delete every row in your Supabase database. Row-Level Security doesn't apply to it."})
         if role == "anon":
             return out | {"title": "Supabase anon key", "severity": "Low", "false_positive": True,
                           "note": "Supabase's anon key is public by design and safe to ship to browsers, as long as Row-Level Security is on for every table."}
-        out["title"] = "Hardcoded JWT"
+        out |= {"title": "Hardcoded JWT", "what": "this token", "env_var": "AUTH_TOKEN"}
     else:
-        for prefix, what, severity, money in KEY_PREFIXES:
+        for prefix, (what, severity, money, env_var, rotate, impact) in PROVIDERS.items():
             if value.startswith(prefix):
-                out |= {"title": f"Exposed {what}", "severity": severity, "money_risk": money,
-                        "impact": IMPACT.get(prefix) or (BILL.format(what=what.split(" API")[0]) if money else ""),
+                out |= {"title": f"Exposed {what}", "what": f"your {what}", "severity": severity, "money_risk": money,
+                        "env_var": env_var, "rotate": rotate,
+                        "impact": impact or (f"Anyone who finds this key can use your {what.split(' API')[0]} account on your bill, or drain its quota." if money else ""),
                         "reason": "Keys for paid APIs are billed to whoever owns them." if money else ""}
                 if prefix == "AIza":
-                    out["note"] = "Firebase web config keys look like this and are public by design. Any other Google key should be restricted in Google Cloud Console, or anyone can bill usage to you."
+                    out["note"] = "Firebase web config keys look like this and are public by design. Any other Google key should be restricted in Google Cloud Console."
                 break
+    return _in_tests(file, out)
 
+
+def _in_tests(file, out):
     if TEST_PATH.search(file):
         out |= {"severity": lower(out["severity"]), "note": (out["note"] + " It's in a test or example file, so it may be a dummy value.").strip()}
     return out
