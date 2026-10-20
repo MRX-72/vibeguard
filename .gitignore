@@ -7,3 +7,6 @@ backend/static/
 .env
 .DS_Store
 .firebase/
+
+# the demo app ships its .env on purpose (it is part of what VibeGuard detects)
+!sample-repo/.env

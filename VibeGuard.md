@@ -251,11 +251,11 @@ Target 10–15 shipped rules. These three (XSS sink, SQL concat, frontend secret
 - [x] **Commit** — *demoable: full UX works end to end*
 
 ### Phase 2 — Ingestion
-- [ ] Paste → write to temp sandbox dir
-- [ ] Zip upload → extract to temp dir (reject path-traversal entries)
-- [ ] GitHub URL → shallow clone (`--depth 1`), **public only**, reject private/auth
-- [ ] Enforce 50 MB size cap; clean up temp dir after every scan (even on failure)
-- [ ] **Commit**
+- [x] Paste → write to temp sandbox dir
+- [x] Zip upload → extract to temp dir (reject path-traversal entries)
+- [x] GitHub URL → shallow clone (`--depth 1`), **public only**, reject private/auth
+- [x] Enforce 50 MB size cap; clean up temp dir after every scan (even on failure)
+- [x] **Commit**
 
 ### Phase 3 — Real scanners
 - [ ] `gitleaks detect` wired + output parsed into normalized findings
@@ -322,6 +322,7 @@ Target 10–15 shipped rules. These three (XSS sink, SQL concat, frontend secret
 
 > Append a dated entry after each work session. Most recent at top.
 
+- 2026-10-21 — Phase 2 done. `ingest.py`: `validate()` runs before queueing (instant 400 with a plain-English message) and `sandbox()` builds a `TemporaryDirectory` that is always deleted. Paste → file named from the optional filename (path-sanitized) or guessed from content (`.py`/`.rules`/`.sql`/`.env`/`.tsx`/`.js`). Zip → spooled to a temp file (not RAM), rejected on absolute/`..`/drive-letter entries, > 20k entries, or > 50 MB declared uncompressed size; `node_modules/`, `.git/`, `__MACOSX/` skipped. GitHub → URL validated and rebuilt as `https://github.com/<owner>/<repo>.git`, `git clone --depth 1` with credential helpers disabled and prompts off, so private repos fail fast (0.6 s) instead of hanging; `.git` removed after clone. 50 MB cap on request size, zip contents and final tree. One scan runs at a time (semaphore) for the 512 MB Render box. Added `sample-repo/` ("PromptPal": React + Supabase + Express + Firebase, 20 files) and the `demo` source. Verified: `test_vibeguard.py` (traversal, zip bomb, cleanup on error, URL forms, paste names) passes; every source exercised through the API; no sandbox dirs or temp zips left behind.
 - 2026-10-21 — Phase 1 done. `POST /scan` (multipart form), `GET /scan/{id}/status`, `GET /scan/{id}`; stubbed pipeline walks the stage list with a delay and stores 4 fake findings; `scoring.py` (final formula: risk 0–100 + A–F grade) is already in. Frontend: 3-tab input card (paste with optional filename / zip dropzone / GitHub URL), "Try the demo app" button, polling progress list, report with grade, risk score count-up, severity counts, expandable finding cards with severity rail. Report URL is `#/scan/<id>`, so it survives refresh and can be shared. Verified in headless Chromium at 1280px and 390px. Fixed: stub reused finding ids, so a second scan failed on the UNIQUE constraint — the failed state rendered correctly, which doubled as an error-state test.
 - 2026-10-21 — Hosting switched to Render free + Firebase Hosting (card-free); §22 rewritten, Trivy dropped from the deployed set. Groq key verified against the live API (`openai/gpt-oss-20b` and `gpt-oss-120b` both listed); stored only in gitignored `backend/.env`.
 - 2026-10-21 — Phase 0 done. FastAPI `/health`, SQLite (`scans` + `findings`, plus report columns used later: `severity_reason`, `impact`, `money_risk`, `confidence`, `reprompt`, `refs`, `evidence`, `triage_note`, and `scans.scanners`/`source_label`), Vite 8 + React 19 + Tailwind 4 shell with dark design tokens, README. All six scanners installed locally (semgrep 1.181, njsscan 1.0.1, gitleaks 8.30.1, retire 6.1.0, osv-scanner 2.7.0, trivy 0.76.0).

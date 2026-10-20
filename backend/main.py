@@ -1,5 +1,8 @@
 import os
+import shutil
+import tempfile
 from contextlib import asynccontextmanager
+from pathlib import Path
 from uuid import uuid4
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
@@ -7,12 +10,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.datastructures import UploadFile
 
 import db
+import ingest
 import pipeline
 import scoring
 from models import SEVERITIES, Finding
-
-SOURCE_TYPES = {"paste", "zip", "github", "demo"}
-
 
 @asynccontextmanager
 async def lifespan(app):
@@ -35,16 +36,28 @@ def health():
 
 @app.post("/scan")
 async def create_scan(request: Request, background: BackgroundTasks):
-    form = await request.form()
+    if int(request.headers.get("content-length") or 0) > ingest.MAX_BYTES + 1024 * 1024:
+        raise HTTPException(413, "Uploads are limited to 50 MB.")
+    form = await request.form(max_files=1, max_fields=5)
     source_type = form.get("source_type")
-    if source_type not in SOURCE_TYPES:
-        raise HTTPException(400, "source_type must be one of: paste, zip, github, demo")
     payload = form.get("payload")
     if isinstance(payload, UploadFile):
-        payload = await payload.read()
+        # spool to disk, not memory: the scan runs after this request (and its upload) is gone
+        fd, path = tempfile.mkstemp(suffix=".zip")
+        with os.fdopen(fd, "wb") as out:
+            shutil.copyfileobj(payload.file, out)
+        payload = Path(path)
+    try:
+        payload, label = ingest.validate(source_type, payload, form.get("filename"))
+    except ingest.IngestError as e:
+        if isinstance(payload, Path):
+            payload.unlink(missing_ok=True)
+        raise HTTPException(400, str(e))
+    if source_type == "zip":
+        label = getattr(form.get("payload"), "filename", None) or "upload.zip"
     scan_id = str(uuid4())
-    db.create_scan(scan_id, source_type, None, pipeline.initial_steps())
-    background.add_task(pipeline.run_scan, scan_id, source_type, payload, form.get("filename"))
+    db.create_scan(scan_id, source_type, label, pipeline.initial_steps())
+    background.add_task(pipeline.run_scan, scan_id, source_type, payload, label)
     return {"scan_id": scan_id}
 
 
