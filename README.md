@@ -29,7 +29,7 @@ Each scanner is optional. A missing binary is skipped and noted in the report.
 ```sh
 uv tool install --python 3.12 semgrep
 uv tool install --python 3.12 njsscan       # separate tool env: njsscan pins its own semgrep
-brew install gitleaks osv-scanner trivy
+brew install gitleaks osv-scanner
 npm install -g retire
 ```
 
@@ -57,6 +57,7 @@ Covers ingestion safety (zip traversal, size caps, cleanup), dedupe, secret clas
 | `GROQ_API_KEY` | — | required for `groq` (`LLM_API_KEY` also accepted) |
 | `GROQ_MODEL` | `openai/gpt-oss-20b` | see console.groq.com/docs/models |
 | `OLLAMA_URL` | `http://localhost:11434` | for `local` |
-| `PORT` | `8080` | container only |
+| `ALLOWED_ORIGINS` | `http://localhost:5173` | comma-separated origins allowed to call the API (CORS) |
+| `PORT` | `10000` | container only (Render injects it) |
 
 Without an LLM key the scan still runs; findings use the built-in explanations and fixes.
