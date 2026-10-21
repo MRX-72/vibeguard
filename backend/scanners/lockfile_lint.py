@@ -86,7 +86,7 @@ class LockfileLint(Scanner):
 def _json(path):
     try:
         return json.loads(path.read_text())
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         return {}
 
 

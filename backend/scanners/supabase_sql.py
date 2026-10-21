@@ -62,6 +62,9 @@ class Schema:
     buckets: dict = field(default_factory=dict)  # id -> {"public": bool, "file": , "line": }
 
 
+DOLLAR = re.compile(r"\$\w*\$")
+
+
 def statements(text):
     """(line, statement) with comments blanked, split on ';' outside quotes, quoted identifiers and $$ bodies."""
     out, buf, start, line, i, n = [], [], None, 1, 0, len(text)
@@ -78,8 +81,8 @@ def statements(text):
             buf.append(" ")
             i = j
             continue
-        if c in "'\"" or (c == "$" and re.match(r"\$\w*\$", text[i:])):
-            close = c if c in "'\"" else re.match(r"\$\w*\$", text[i:])[0]
+        if c in "'\"" or (c == "$" and DOLLAR.match(text, i)):  # match at i: slicing text[i:] per $ was quadratic
+            close = c if c in "'\"" else DOLLAR.match(text, i)[0]
             j = text.find(close, i + len(close))
             j = n if j < 0 else j + len(close)
             if start is None:
@@ -180,7 +183,7 @@ def read(files):
                 schema.triggers.append((_name(m[3]), f"{m[1]} {m[2]}".lower(), _name(m[4]), file, line))
             elif m := re.match(r"insert into storage\.buckets\s*\(([^)]*)\)\s*values\s*\((.*?)\)", s, re.I):
                 cols = [c.strip().strip('"').lower() for c in m[1].split(",")]
-                vals = [v.strip() for v in re.split(r",(?=(?:[^']*'[^']*')*[^']*$)", m[2])]
+                vals = [v.strip() for v in re.findall(r"'[^']*'|[^,]+", m[2])]  # commas outside quotes (a lookahead split was quadratic)
                 row = dict(zip(cols, vals, strict=False))
                 if "id" in row:
                     schema.buckets[row["id"].strip("'")] = {"public": row.get("public", "false").lower() == "true", "file": file, "line": line}

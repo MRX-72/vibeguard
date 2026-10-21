@@ -204,7 +204,7 @@ def jwt_claims(token):
         return None
     try:
         claims = json.loads(base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4)))
-    except (ValueError, UnicodeDecodeError):
+    except (ValueError, UnicodeDecodeError, RecursionError):
         return None
     return claims if isinstance(claims, dict) else None
 

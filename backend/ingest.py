@@ -45,10 +45,10 @@ def validate(source_type, payload, filename=None):
 
 
 @contextmanager
-def sandbox(source_type, payload, filename=None):
-    """Yield a directory holding the code. It is always deleted afterwards, even on error."""
+def sandbox(source_type, payload, filename=None, base=None):
+    """Yield a directory holding the code (inside `base` when given). It is always deleted afterwards, even on error."""
     try:
-        with tempfile.TemporaryDirectory(prefix="vibeguard-") as tmp:
+        with tempfile.TemporaryDirectory(prefix="vibeguard-", dir=base) as tmp:
             root = Path(tmp, "src")
             root.mkdir()
             if source_type == "paste":

@@ -42,18 +42,20 @@ class Project:
 
     def __init__(self, folder: Path):
         self.folder = folder
-        manifest = _json(folder / "package.json") or {}
-        self.manifest_found = bool(manifest)
         self.direct = {}  # name -> declared spec
         self.direct_dev = set()
-        for section in ("dependencies", "optionalDependencies", "peerDependencies", "devDependencies"):
-            for name, spec in (manifest.get(section) or {}).items():
-                self.direct.setdefault(name, spec)
-                if section == "devDependencies" or is_build_tool(name):
-                    self.direct_dev.add(name)
         self.graph = {}  # name -> set of dependency names (all versions merged; good enough for "does it ship")
         self.dev_flagged = set()  # lockfile says dev-only
-        self.has_graph = self._read_package_lock() | self._read_bun_lock() | self._read_pnpm_lock() | self._read_yarn_lock()
+        try:
+            manifest = _json(folder / "package.json") or {}
+            for section in ("dependencies", "optionalDependencies", "peerDependencies", "devDependencies"):
+                for name, spec in (manifest.get(section) or {}).items():
+                    self.direct.setdefault(name, spec)
+                    if section == "devDependencies" or is_build_tool(name):
+                        self.direct_dev.add(name)
+            self.has_graph = self._read_package_lock() | self._read_bun_lock() | self._read_pnpm_lock() | self._read_yarn_lock()
+        except (AttributeError, TypeError):  # valid JSON/YAML of the wrong shape: treat the project as unreadable, not fatal
+            self.direct, self.direct_dev, self.graph, self.dev_flagged, self.has_graph = {}, set(), {}, set(), False
         self.via = self._reach([n for n in self.direct if n not in self.direct_dev])  # runtime pkg -> direct dep pulling it in
         self.dev_via = self._reach(sorted(self.direct_dev), stop_at_build=False)  # same, for build/test tooling
 
@@ -91,7 +93,7 @@ class Project:
             return False
         try:  # bun.lock is JSON with trailing commas
             lock = json.loads(re.sub(r",(\s*[}\]])", r"\1", text))
-        except ValueError:
+        except (ValueError, RecursionError):
             return False
         for entry in (lock.get("packages") or {}).values():
             if not isinstance(entry, list) or not entry or not isinstance(entry[0], str):
@@ -104,7 +106,7 @@ class Project:
     def _read_pnpm_lock(self):
         try:  # pnpm-lock.yaml can be megabytes: use libyaml when PyYAML has it
             lock = yaml.load((self.folder / "pnpm-lock.yaml").read_text(), Loader=getattr(yaml, "CSafeLoader", yaml.SafeLoader))
-        except (OSError, yaml.YAMLError):
+        except (OSError, yaml.YAMLError, RecursionError):
             return False
         if not isinstance(lock, dict):
             return False
@@ -192,7 +194,7 @@ def _deps(pkg):
 def _json(path):
     try:
         return json.loads(path.read_text())
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):  # RecursionError: nested thousands deep
         return None
 
 

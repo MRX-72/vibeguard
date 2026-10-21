@@ -748,6 +748,63 @@ def test_false_positive_guards():
     assert {f.title for f in cards if f.file == "firestore.rules"} == {"Anyone can read users in Firebase", "Anyone can read messages in Firebase"}
 
 
+def test_hostile_files_finish_fast():
+    """Files built to make our own parsers crawl (each one used to hang a scan for minutes) or crash them."""
+    import time
+    from scanners import npm_deps
+    from scanners.custom_rules import VibeRules
+    root = Path(tempfile.mkdtemp())
+    hostile = {"supabase/migrations/1.sql": "insert into storage.buckets (id) values (" + "'a'," * 200_000 + ")\n"
+                                            "create policy p on t using (" + "$" * 300_000,
+               "firestore.rules": "service cloud.firestore {\n" + "allow read, " * 50_000,
+               "database.rules.json": '{"rules": ' + '{"a": ' * 5000 + '{".read": true}' + "}" * 5000 + "}"}
+    for name, text in hostile.items():
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_text(text)
+    started = time.time()
+    found = VibeRules().run(root, Path(tempfile.mkdtemp()))
+    assert time.time() - started < 10 and [f.raw_rule_id.split("@")[0] for f in found] == ["vibe.firebase-open-rules"]
+    for lock, text in {"package-lock.json": "[" * 100_000, "pnpm-lock.yaml": "importers: x\npackages: [1]\n"}.items():
+        (root / lock).write_text(text)
+        (root / "package.json").write_text('{"dependencies": {"a": "1"}}')
+        assert npm_deps.Project(root).classify("a")[0] in ("runtime-direct", "unknown")  # unreadable, not a crash
+        (root / lock).unlink()
+
+
+def test_scans_run_in_a_child_with_a_time_limit():
+    """A scan runs in its own process: a normal one finishes; one past the limit is stopped, fails with a message,
+    leaves nothing on disk and frees the slot for the next scan."""
+    import os
+    import db
+    import pipeline
+    old_db, old_env = db.DB_PATH, os.environ.get("VIBEGUARD_DB")
+    db.DB_PATH = os.environ["VIBEGUARD_DB"] = str(Path(tempfile.mkdtemp()) / "t.db")  # the child reads the env var
+    leftovers = lambda: set(Path(tempfile.gettempdir()).glob("vibeguard-*"))  # noqa: E731
+    before = leftovers()
+    try:
+        db.init()
+        db.create_scan("ok", "paste", "a.js", pipeline.initial_steps())
+        pipeline.run_scan("ok", "paste", "const k = 1\n", "a.js")
+        assert db.get_scan("ok")["status"] == "done", db.get_scan("ok")
+        old_limit, pipeline.TIME_LIMIT = pipeline.TIME_LIMIT, 1
+        try:
+            db.create_scan("slow", "demo", "Demo app", pipeline.initial_steps())
+            pipeline.run_scan("slow", "demo", None)
+        finally:
+            pipeline.TIME_LIMIT = old_limit
+        scan = db.get_scan("slow")
+        assert scan["status"] == "failed" and "took longer" in scan["error"], scan
+        assert not any(s["state"] == "running" for s in scan["steps"]) and leftovers() == before
+        assert pipeline._slot.acquire(blocking=False)
+        pipeline._slot.release()
+    finally:
+        db.DB_PATH = old_db
+        if old_env is None:
+            os.environ.pop("VIBEGUARD_DB")
+        else:
+            os.environ["VIBEGUARD_DB"] = old_env
+
+
 def test_supabase_sql_reader():
     from scanners import supabase_sql as q
     sql = ("-- comment ; with a semicolon\ncreate table if not exists \"public\".\"Items\" (id int);\n"

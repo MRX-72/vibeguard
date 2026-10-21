@@ -1323,7 +1323,8 @@ def _server_guard(tables, table, cmd):
 
 # --- Firebase security rules ---------------------------------------------------------------------------------
 
-ALLOW = re.compile(r"match\s+(/\S*)\s*\{|\{|\}|allow\s+([a-z,\s]+?)\s*(?::\s*if\s+([^;]+?))?\s*;", re.I)
+# bounded lengths: unbounded lazy groups rescanned the rest of the file at every `allow` with no `;` (quadratic)
+ALLOW = re.compile(r"match\s+(/\S*)\s*\{|\{|\}|allow\s+([a-z,\s]{1,80}?)\s*(?::\s*if\s+([^;]{1,2000}?))?\s*;", re.I)
 WILDCARD = re.compile(r"\{(\w+)(=\*\*)?\}")
 
 
@@ -1404,13 +1405,14 @@ def _judge_rule(ops, cond, path):
 def _rtdb_rules(root, file, text):
     try:
         rules = json.loads(text).get("rules", {})
-    except (ValueError, AttributeError):
+    except (ValueError, AttributeError, RecursionError):
         return []
     out, lines = [], text.splitlines()
-
-    def walk(node, path):
+    stack = [(rules, "/")]  # a loop, not recursion: rules nested thousands deep would overflow the stack
+    while stack:
+        node, path = stack.pop()
         if not isinstance(node, dict):
-            return
+            continue
         for key in (".read", ".write"):
             val = node.get(key)
             if val is True or (isinstance(val, str) and val.strip() in ("true", "auth != null", "auth !== null")):
@@ -1426,9 +1428,7 @@ def _rtdb_rules(root, file, text):
                                  raw_ops=key, raw_cond=json.dumps(val), collection=path.strip("/") or "data"))
         for k, child in node.items():
             if not k.startswith("."):
-                walk(child, path.rstrip("/") + "/" + k)
-
-    walk(rules, "/")
+                stack.append((child, path.rstrip("/") + "/" + k))
     return out
 
 
