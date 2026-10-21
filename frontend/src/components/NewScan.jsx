@@ -1,4 +1,4 @@
-import { ArrowRight, CloudUpload, Code, FolderGit2, KeyRound, LoaderCircle, Lock, Play, ShieldCheck } from 'lucide-react'
+import { ArrowRight, CloudUpload, Code, FolderGit2, KeyRound, LoaderCircle, Lock, ShieldCheck } from 'lucide-react'
 import { useRef, useState } from 'react'
 
 const TABS = [
@@ -15,7 +15,7 @@ export default function NewScan({ onSubmit }) {
   const [filename, setFilename] = useState('')
   const [file, setFile] = useState(null)
   const [url, setUrl] = useState('')
-  const [busy, setBusy] = useState(null) // 'scan' | 'demo' while a request is out
+  const [busy, setBusy] = useState(null) // 'scan' while a request is out
   const [error, setError] = useState(null)
   const [dragging, setDragging] = useState(false)
   const [verify, setVerify] = useState(false)
@@ -28,7 +28,7 @@ export default function NewScan({ onSubmit }) {
     if (payload != null) form.append('payload', payload)
     if (sourceType === 'paste' && filename.trim()) form.append('filename', filename.trim())
     if (verify) form.append('verify_secrets', '1')
-    setBusy(sourceType === 'demo' ? 'demo' : 'scan')
+    setBusy('scan')
     setError(null)
     try {
       await onSubmit(form)
@@ -53,23 +53,7 @@ export default function NewScan({ onSubmit }) {
 
   return (
     <form id="new-scan" onSubmit={submit} className="flex scroll-mt-28 flex-col rounded-2xl border border-line bg-surface p-5 sm:p-7">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <h2 className="text-xl font-semibold tracking-[-0.02em]">New scan</h2>
-          <p className="mt-1 text-[15px] text-muted">Paste a file, upload a zip, or link a public GitHub repo.</p>
-        </div>
-        <button
-          type="button"
-          disabled={!!busy}
-          onClick={() => send('demo')}
-          className="flex shrink-0 items-center gap-2 self-start rounded-lg border border-line-strong px-3.5 py-2 text-sm text-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-50"
-        >
-          {busy === 'demo' ? <LoaderCircle className="size-4 animate-spin" /> : <Play className="size-3.5 fill-current" strokeWidth={1.5} />}
-          Try the demo app
-        </button>
-      </div>
-
-      <div role="tablist" aria-label="How to provide code" className="mt-6 flex gap-1 overflow-x-auto border-b border-line">
+      <div role="tablist" aria-label="How to provide code" className="flex gap-1 overflow-x-auto border-b border-line">
         {TABS.map(({ id, label, icon: Icon }) => (
           <button
             key={id}

@@ -1,16 +1,27 @@
-import { Activity, FileText, Lock, RefreshCw } from 'lucide-react'
+import { FlaskConical, History, House, Lock, RefreshCw, ScanLine } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 import { getReport, getStatus, health, startScan } from './api'
 import { rememberScan, scanIds } from './history'
-import Overview from './components/Overview'
+import Demo from './components/Demo'
+import Home from './components/Home'
+import Logo from './components/Logo'
 import Report from './components/Report'
+import ScanPage from './components/ScanPage'
 import ScanList from './components/ScanList'
 import ScanProgress from './components/ScanProgress'
 
+const PAGES = [
+  { page: 'home', href: '#/', label: 'Home', icon: House },
+  { page: 'scan', href: '#/scan', label: 'Scan', icon: ScanLine },
+  { page: 'demo', href: '#/demo', label: 'Demo', icon: FlaskConical },
+  { page: 'history', href: '#/history', label: 'History', icon: History },
+]
+
 function route() {
-  const scan = location.hash.match(/^#\/scan\/([\w-]+)/)?.[1]
-  if (scan) return { page: 'scan', id: scan }
-  return { page: location.hash.startsWith('#/history') ? 'history' : 'overview' }
+  const id = location.hash.match(/^#\/scan\/([\w-]+)/)?.[1]
+  if (id) return { page: 'report', id }
+  const page = location.hash.match(/^#\/(scan|demo|history)\b/)?.[1]
+  return { page: page ?? 'home' }
 }
 
 export default function App() {
@@ -31,7 +42,7 @@ export default function App() {
     location.hash = `#/scan/${scan_id}`
   }
 
-  const crumb = { overview: 'Overview', history: 'Scan history', scan: label ?? 'Scan' }[at.page]
+  const current = PAGES.find((p) => p.page === at.page)
 
   return (
     <div className="min-h-dvh lg:grid lg:grid-cols-[264px_minmax(0,1fr)]">
@@ -39,14 +50,19 @@ export default function App() {
       <div className="min-w-0">
         <header className="sticky top-0 z-20 border-b border-line bg-ink/85 backdrop-blur-md print:hidden">
           <div className="flex h-16 items-center gap-4 px-4 sm:px-8 lg:px-12">
-            <a href="#/" className="lg:hidden" aria-label="VibeGuard home"><Logo compact /></a>
-            <nav aria-label="Breadcrumb" className="hidden min-w-0 items-center gap-2.5 text-[15px] sm:flex">
-              <a href="#/" className="text-faint hover:text-muted">Workspace</a>
-              <span className="text-line-strong">/</span>
-              <span className="truncate text-fg">{crumb}</span>
+            <a href="#/" className="lg:hidden" aria-label="VibeGuard home"><Logo size={30} /></a>
+            <nav aria-label="Breadcrumb" className="hidden min-w-0 items-center gap-2.5 text-[15px] lg:flex">
+              {current ? (
+                <span className="text-fg">{current.label}</span>
+              ) : (
+                <>
+                  <a href="#/history" className="text-faint hover:text-muted">History</a>
+                  <span className="text-line-strong">/</span>
+                  <span className="truncate text-fg">{label ?? 'Report'}</span>
+                </>
+              )}
             </nav>
             <div className="ml-auto flex items-center gap-3">
-              <Status state={status} />
               <button
                 type="button"
                 onClick={() => setTick((t) => t + 1)}
@@ -58,34 +74,20 @@ export default function App() {
               </button>
             </div>
           </div>
-          <nav className="flex gap-1 border-t border-line px-3 lg:hidden" aria-label="Sections">
-            <MobileTab href="#/" active={at.page === 'overview'}>Overview</MobileTab>
-            <MobileTab href="#/history" active={at.page === 'history'}>Scan history</MobileTab>
+          <nav className="flex border-t border-line px-1 lg:hidden" aria-label="Pages">
+            {PAGES.map((p) => <MobileTab key={p.page} href={p.href} active={at.page === p.page}>{p.label}</MobileTab>)}
           </nav>
         </header>
 
         <main className="mx-auto w-full max-w-[1200px] px-4 pb-24 sm:px-8 lg:px-12">
-          {at.page === 'overview' && <Overview onSubmit={submit} tick={tick} status={status} />}
+          {at.page === 'home' && <Home status={status} />}
+          {at.page === 'scan' && <ScanPage onSubmit={submit} tick={tick} />}
+          {at.page === 'demo' && <Demo onSubmit={submit} tick={tick} />}
           {at.page === 'history' && <HistoryPage tick={tick} />}
-          {at.page === 'scan' && <ScanView key={at.id} scanId={at.id} onLabel={setLabel} />}
+          {at.page === 'report' && <ScanView key={at.id} scanId={at.id} onLabel={setLabel} />}
         </main>
       </div>
     </div>
-  )
-}
-
-export function Logo({ compact }) {
-  return (
-    <span className="flex items-center gap-2.5">
-      <span className="heat-ramp grid size-8 place-items-center rounded-[9px] text-ink">
-        <svg viewBox="0 0 24 24" className="size-[18px]" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-          <path d="M12 3 4.5 6v5.5c0 4.6 3.1 8.2 7.5 9.5 4.4-1.3 7.5-4.9 7.5-9.5V6L12 3Z" />
-          <path d="m8.8 12.2 2.2 2.2 4.3-4.4" />
-        </svg>
-      </span>
-      <span className="text-[19px] font-semibold tracking-[-0.025em]">VibeGuard</span>
-      {!compact && <span className="rounded-md bg-raised px-1.5 py-0.5 text-[11px] font-medium text-faint">Beta</span>}
-    </span>
   )
 }
 
@@ -94,9 +96,13 @@ function Sidebar({ page }) {
   return (
     <aside className="sticky top-0 hidden h-dvh flex-col border-r border-line bg-side px-4 py-6 lg:flex print:hidden">
       <a href="#/" className="px-2"><Logo /></a>
-      <nav className="mt-10 flex flex-col gap-0.5" aria-label="Sections">
-        <NavItem href="#/" icon={Activity} active={page === 'overview'}>Overview</NavItem>
-        <NavItem href="#/history" icon={FileText} active={page === 'history'} badge={count || null}>Scan history</NavItem>
+      <nav className="mt-10 flex flex-col gap-0.5" aria-label="Pages">
+        {PAGES.map((p) => (
+          <NavItem key={p.page} href={p.href} icon={p.icon} active={page === p.page || (p.page === 'history' && page === 'report')}
+            badge={p.page === 'history' && count ? count : null}>
+            {p.label}
+          </NavItem>
+        ))}
       </nav>
       <div className="mt-auto rounded-xl border border-line bg-surface p-4">
         <p className="flex items-center gap-2.5 text-[14px] font-medium">
@@ -131,27 +137,10 @@ function NavItem({ href, icon: Icon, active, badge, children }) {
 
 function MobileTab({ href, active, children }) {
   return (
-    <a href={href} className={`relative px-3 py-3 text-sm ${active ? 'text-fg' : 'text-muted'}`}>
+    <a href={href} aria-current={active ? 'page' : undefined} className={`relative flex-1 py-3 text-center text-sm ${active ? 'text-fg' : 'text-muted'}`}>
       {children}
       {active && <span className="absolute inset-x-3 -bottom-px h-0.5 rounded-full bg-hot" />}
     </a>
-  )
-}
-
-const STATUS = {
-  checking: ['bg-faint', 'Checking scanner…'],
-  ready: ['bg-fix', 'Scanner ready'],
-  waking: ['bg-med animate-pulse', 'Waking the scanner…'],
-  down: ['bg-crit', 'Scanner offline'],
-}
-
-function Status({ state }) {
-  const [dot, text] = STATUS[state]
-  return (
-    <span className="flex items-center gap-2 text-[13.5px] text-muted" role="status">
-      <span className={`size-2 rounded-full ${dot}`} />
-      <span className="hidden sm:inline">{text}</span>
-    </span>
   )
 }
 
@@ -176,7 +165,7 @@ function useHealth(tick) {
 function HistoryPage({ tick }) {
   return (
     <section className="pt-10 sm:pt-14">
-      <h1 className="text-[2rem] font-semibold tracking-[-0.03em]">Scan history</h1>
+      <h1 className="text-[2.25rem] font-semibold tracking-[-0.03em]">History</h1>
       <p className="mt-2 max-w-[60ch] text-muted">Every scan started in this browser, newest first. Reports are kept until the server restarts.</p>
       <div className="mt-8 rounded-2xl border border-line bg-surface px-5 py-2 sm:px-6">
         <ScanList tick={tick} limit={20} />
