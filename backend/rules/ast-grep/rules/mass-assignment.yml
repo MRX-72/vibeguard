@@ -6,7 +6,11 @@ rule:
   kind: call_expression
   all:
     - has: {field: function, regex: '\.(update|insert|upsert|create|createMany|updateOne|updateMany|findOneAndUpdate|findByIdAndUpdate|save)$'}
-    - has: {field: arguments, regex: '^\(\s*(\{\s*(data\s*:\s*)?(\.\.\.)?\s*)?(req|request|ctx\.request)\.body\s*[,)}]'}
+    - has:
+        field: arguments
+        any:  # .update(req.body) / .create({ data: req.body }) / .insert({ ...req.body }) / Mongo's .updateOne(q, { $set: req.body })
+          - regex: '^\(\s*(\{\s*(data\s*:\s*)?(\.\.\.)?\s*)?(req|request|ctx\.request)\.body\s*[,)}]'
+          - regex: '\{\s*\$set\s*:\s*(req|request|ctx\.request)\.body\s*\}'
     # hashing the body to check a webhook signature (createHmac(…).update(req.body)) is the opposite of this bug
     - not: {has: {field: function, regex: '(?i)createH(ash|mac)|cipher|\bhmac\b|\bhash(er)?\b|\bsha\d*\b|\bmd5\b'}}
 metadata: {vibe: mass-assignment, confidence: Likely}

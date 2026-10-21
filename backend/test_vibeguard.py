@@ -511,7 +511,9 @@ VIBE_FIXTURE = {
                                  'const ok2 = jwt.sign({ id: user.id, exp: soon }, process.env.JWT_SECRET)\n'
                                  'const me = jwt.verify(req.headers.authorization, process.env.JWT_SECRET)\n'
                                  'await supabase.from("profiles").update(req.body).eq("id", me.id)\n'
-                                 'await supabase.from("profiles").update({ name: req.body.name }).eq("id", me.id)\n'),
+                                 'await supabase.from("profiles").update({ name: req.body.name }).eq("id", me.id)\n'
+                                 'await db.collection("users").updateOne({ _id: me.id }, { $set: req.body })\n'
+                                 'await db.collection("users").updateOne({ _id: me.id }, { $set: { name: req.body.name } })\n'),
     "server/routes/hashed.js": ('await db.insert({ email, password: hashed })\nconst hashed = await bcrypt.hash(req.body.password, 12)\n'
                                 'if (!(await bcrypt.compare(req.body.password, user.password_hash))) fail()\n'),
     "src/pages/Signup.tsx": "if (form.password !== form.confirmPassword) setError(\"no match\")\n",
@@ -614,7 +616,7 @@ def test_vibe_rules():
         "Any signed-in user can overwrite or delete files in the uploads bucket", "Anyone can upload files to the inbox bucket"}
     assert {f.line for f in found if f.file == "server/routes/members.js" and "plaintext" in f.raw_rule_id} == {2, 3}
     assert {f.line for f in found if f.raw_rule_id == "vibe.jwt-no-expiry"} == {4}
-    assert {f.line for f in found if f.raw_rule_id == "vibe.mass-assignment"} == {8}
+    assert {f.line for f in found if f.raw_rule_id == "vibe.mass-assignment"} == {8, 10}  # Mongo's { $set: req.body } too; a picked field is fine
     assert {f.line for f in found if f.raw_rule_id == "vibe.supabase-privilege-escalation:metadata-code"} == {3}
     assert {f.line for f in found if f.file == "api/main.py"} == {1} and {f.line for f in found if f.file == "api/flask_app.py"} == {1}
     lemon = next(f for f in found if f.raw_rule_id == "vibe.webhook-unsigned")
