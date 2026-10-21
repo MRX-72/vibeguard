@@ -85,6 +85,8 @@ The report opens with the grade, a one-line verdict and the three findings that 
 
 ## Deploy (card-free)
 
+Full step-by-step guide, with checks, troubleshooting and a demo script: [DEPLOY.md](DEPLOY.md).
+
 The API runs on Render's free plan from the `Dockerfile` (pinned scanners, semgrep rules baked in, unprivileged user); the UI is static on Firebase Hosting. The `image` workflow builds the same image on every push and runs the demo scan inside it.
 
 1. Push to GitHub. On Render: **New → Blueprint**, pick the repo (`render.yaml`), then set `GROQ_API_KEY` and `ALLOWED_ORIGINS` (`https://vibeguard-scan.web.app,https://vibeguard-scan.firebaseapp.com`).
