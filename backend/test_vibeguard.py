@@ -872,6 +872,35 @@ def test_ai_review_guardrails():
             os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
 
 
+def test_report_exports():
+    """The summary leads with the worst, Markdown reads as a report, SARIF is what GitHub code scanning expects,
+    and an upload without a length is refused before anything is written to disk."""
+    import export
+    crit = _f(severity="Critical", title="Key exposed", impact="Anyone can use it.", confidence="Likely", fix_diff="- a\n+ b",
+              reprompt="Move the key.", raw_rule_id="vibe.x", cwe=["CWE-798"])
+    low = _f(severity="Low", title="Hygiene", raw_rule_id="y", file="ci.yml", line=0)
+    noise = _f(severity="High", title="Placeholder", is_false_positive=True, ai_note="It's an example value.", raw_rule_id="z")
+    s = export.summary([low, noise, crit])
+    assert s["top"] == [crit.id, low.id] and "1 critical issue first" in s["verdict"]
+    assert export.summary([])["verdict"] == "No issues found in what we checked."
+    scan = {"source_label": "demo", "source_type": "demo", "risk_score": 60, "created_at": "now",
+            "steps": [{"label": "VibeGuard rules", "state": "done", "note": "1 finding", "passed": ["RLS is on"]},
+                      {"label": "AI review", "state": "skipped", "tool": "groq", "note": "turned off"}]}
+    md = export.markdown(scan, "D", [crit, low, noise])
+    for part in ("**Grade D**", "## This could hurt you", "1. **Key exposed** (Critical). Anyone can use it.", "```diff\n- a\n+ b",
+                 "> Move the key.", "## Already right", "- RLS is on", "Placeholder (", "It's an example value.", "- AI review (groq): turned off"):
+        assert part in md, part
+    run = export.sarif([crit, low, noise])["runs"][0]
+    results = {r["ruleId"]: r for r in run["results"]}
+    assert results["vibe.x"]["level"] == "error" and results["vibe.x"]["locations"][0]["physicalLocation"]["region"]["startLine"] == crit.line
+    assert "region" not in results["y"]["locations"][0]["physicalLocation"] and results["z"]["suppressions"][0]["justification"]
+    assert next(r for r in run["tool"]["driver"]["rules"] if r["id"] == "vibe.x")["properties"]["security-severity"] == "9.5"
+    from fastapi.testclient import TestClient
+    import main
+    r = TestClient(main.app).post("/scan", content=b"x", headers={"content-type": "multipart/form-data; boundary=b", "transfer-encoding": "chunked"})
+    assert r.status_code == 411, r.status_code
+
+
 def test_supabase_sql_reader():
     from scanners import supabase_sql as q
     sql = ("-- comment ; with a semicolon\ncreate table if not exists \"public\".\"Items\" (id int);\n"

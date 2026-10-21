@@ -74,3 +74,23 @@ Covers ingestion safety (zip traversal, size caps, cleanup), dedupe, secret clas
 Without an LLM key the scan still runs; findings use the built-in explanations and fixes, and the report lists the AI review as not checked.
 
 The AI review only sees findings a rule couldn't settle ("Needs review", generic scanner rules, generic secrets), never proven ones. It gets the code around each one with secrets masked, must cite the line that decides its verdict (otherwise it counts as "unsure"), can move severity one level, and its fixes are kept only if the lines they remove exist. What it dismisses stays visible under "filtered out", with its reason.
+
+## Reports
+
+The report opens with the grade, a one-line verdict and the three findings that could hurt most, then groups findings by area (keys and secrets, database and auth setup, your code, dependencies). Each card has the impact in plain English, the evidence, a suggested fix and a prompt to paste back into your AI builder, both with copy buttons. Export with the buttons under the grade, or directly:
+
+- `GET /scan/{id}/report.md`: Markdown, for people
+- `GET /scan/{id}/report.sarif`: SARIF 2.1.0, for GitHub code scanning (`gh api` upload or `github/codeql-action/upload-sarif`); filtered findings are included as suppressed, with the reason
+- "Save as PDF" prints the page with a light theme and every card expanded
+
+## Deploy (card-free)
+
+The API runs on Render's free plan from the `Dockerfile` (pinned scanners, semgrep rules baked in, unprivileged user); the UI is static on Firebase Hosting. The `image` workflow builds the same image on every push and runs the demo scan inside it.
+
+1. Push to GitHub. On Render: **New → Blueprint**, pick the repo (`render.yaml`), then set `GROQ_API_KEY` and `ALLOWED_ORIGINS` (`https://<project>.web.app,https://<project>.firebaseapp.com`).
+2. Build and deploy the UI against the Render URL:
+   ```bash
+   cd frontend && VITE_API_BASE_URL=https://<service>.onrender.com npm run build && cd ..
+   firebase deploy --only hosting --project <project>
+   ```
+3. Open the site from a phone and run the demo. The free API sleeps after 15 idle minutes; the page says "Waking the scanner" while it starts (about a minute), so open it once before you show it.

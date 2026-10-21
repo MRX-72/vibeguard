@@ -43,6 +43,24 @@ body {
   outline-offset: 2px;
 }
 
+/* Save as PDF: a light page, every card expanded (Report opens them), no buttons */
+@media print {
+  :root {
+    --color-ink: #ffffff;
+    --color-surface: #ffffff;
+    --color-raised: #f3f3f5;
+    --color-line: #d9d9de;
+    --color-fg: #111114;
+    --color-muted: #3f4048;
+    --color-faint: #6b6e78;
+  }
+  html { color-scheme: light; }
+  figure, summary { break-inside: avoid; }
+  pre { white-space: pre-wrap; overflow: visible !important; }
+  pre > div { min-width: 0 !important; }
+  * { animation: none !important; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;

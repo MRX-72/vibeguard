@@ -1,0 +1,43 @@
+# Build the API image Render will run, then run the demo scan inside it: proves the pinned scanners install and work
+# on linux/amd64 before any deploy.
+name: image
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  build-and-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Build
+        run: docker build -t vibeguard-api .
+      - name: Demo scan inside the container
+        run: |
+          docker run -d --name api -p 10000:10000 -e TRIAGE_BACKEND=off -e ALLOWED_ORIGINS=http://localhost vibeguard-api
+          for i in $(seq 1 30); do curl -fs localhost:10000/health && break; sleep 2; done
+          id=$(curl -fs -X POST localhost:10000/scan -F source_type=demo | python3 -c 'import json,sys; print(json.load(sys.stdin)["scan_id"])')
+          for i in $(seq 1 120); do
+            status=$(curl -fs "localhost:10000/scan/$id/status" | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])')
+            [ "$status" = done ] || [ "$status" = failed ] && break; sleep 3
+          done
+          curl -fs "localhost:10000/scan/$id" > report.json
+          python3 - <<'PY'
+          import json
+          r = json.load(open("report.json"))
+          steps = {s["key"]: (s["state"], s.get("note")) for s in r["scan"]["steps"]}
+          print(json.dumps(steps, indent=1))
+          print("grade", r["grade"], "findings", len(r["findings"]))
+          assert r["scan"]["status"] == "done", r["scan"].get("error")
+          broken = {k: v for k, v in steps.items() if v[0] in ("skipped", "failed") and k not in ("trufflehog", "njsscan", "triage")}
+          assert not broken, broken
+          assert len(r["findings"]) >= 30
+          PY
+      - name: Server log
+        if: always()
+        run: docker logs api 2>&1 | tail -50

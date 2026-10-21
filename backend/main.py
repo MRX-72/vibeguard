@@ -7,9 +7,11 @@ from uuid import uuid4
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, PlainTextResponse
 from starlette.datastructures import UploadFile
 
 import db
+import export
 import ingest
 import pipeline
 import scoring
@@ -39,7 +41,10 @@ def health():
 
 @app.post("/scan")
 async def create_scan(request: Request, background: BackgroundTasks):
-    if int(request.headers.get("content-length") or 0) > ingest.MAX_BYTES + 1024 * 1024:
+    # browsers always send a length with a form; without one (chunked) the 50 MB cap couldn't apply until the disk filled
+    if "content-length" not in request.headers:
+        raise HTTPException(411, "Send the request with a Content-Length header.")
+    if int(request.headers["content-length"]) > ingest.MAX_BYTES + 1024 * 1024:
         raise HTTPException(413, "Uploads are limited to 50 MB.")
     # ponytail: one global cap; per-IP limits if one visitor starts hogging the queue
     if db.active_scans() >= MAX_WAITING:  # scans run one at a time, and each waiting upload sits on disk
@@ -82,14 +87,36 @@ def scan_status(scan_id: str):
     return {k: s[k] for k in ("status", "stage", "risk_score", "steps", "error")}
 
 
-@app.get("/scan/{scan_id}")
-def scan_report(scan_id: str):
+def _report(scan_id):
     scan = _scan_or_404(scan_id)
     findings = [Finding.model_validate(r) for r in db.get_findings(scan_id)]
     findings.sort(key=lambda f: (SEVERITIES.index(f.severity), f.file, f.line))
     score = scan["risk_score"]
-    return {
-        "scan": scan,
-        "grade": scoring.grade(score) if score is not None else None,
-        "findings": [f.model_dump() for f in findings],
-    }
+    return scan, scoring.grade(score) if score is not None else None, findings
+
+
+@app.get("/scan/{scan_id}")
+def scan_report(scan_id: str):
+    scan, grade, findings = _report(scan_id)
+    return {"scan": scan, "grade": grade, "summary": export.summary(findings), "findings": [f.model_dump() for f in findings]}
+
+
+def _done(scan_id):
+    scan, grade, findings = _report(scan_id)
+    if scan["status"] != "done":
+        raise HTTPException(409, "The scan hasn't finished yet.")
+    return scan, grade, findings
+
+
+@app.get("/scan/{scan_id}/report.md")
+def report_markdown(scan_id: str):
+    scan, grade, findings = _done(scan_id)
+    return PlainTextResponse(export.markdown(scan, grade, findings), media_type="text/markdown; charset=utf-8",
+                             headers={"Content-Disposition": f'attachment; filename="vibeguard-{scan_id[:8]}.md"'})
+
+
+@app.get("/scan/{scan_id}/report.sarif")
+def report_sarif(scan_id: str):
+    _, _, findings = _done(scan_id)
+    return JSONResponse(export.sarif(findings), media_type="application/sarif+json",
+                        headers={"Content-Disposition": f'attachment; filename="vibeguard-{scan_id[:8]}.sarif"'})

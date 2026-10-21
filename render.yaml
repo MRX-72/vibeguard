@@ -1,0 +1,18 @@
+# Render Blueprint: New → Blueprint → this repo. Secrets marked sync: false are entered in the dashboard, never committed.
+services:
+  - type: web
+    name: vibeguard-api
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_MODEL
+        value: openai/gpt-oss-120b
+      - key: TRIAGE_BACKEND
+        value: groq
+      - key: ALLOWED_ORIGINS
+        sync: false  # the Firebase Hosting origins, e.g. https://<project>.web.app,https://<project>.firebaseapp.com

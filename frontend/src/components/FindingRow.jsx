@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { SEV } from '../severity'
 
 const AI = { real: 'AI agrees', false_positive: 'AI: not a real risk', unsure: 'AI: unsure' }
@@ -12,7 +13,7 @@ export default function FindingRow({ finding: f, index }) {
   const sev = SEV[f.severity]
   const where = f.file ? `${f.file}${f.line ? `:${f.line}` : ''}` : ''
   return (
-    <li className="animate-[rise_400ms_ease-out_both]" style={{ animationDelay: `${Math.min(index, 12) * 35}ms` }}>
+    <li id={`f-${f.id}`} className="scroll-mt-6 animate-[rise_400ms_ease-out_both]" style={{ animationDelay: `${Math.min(index, 12) * 35}ms` }}>
       <details className="group relative overflow-hidden rounded-lg border border-line bg-surface">
         <span className={`absolute inset-y-0 left-0 w-[3px] ${f.is_false_positive ? 'bg-line' : sev.bg}`} aria-hidden />
         <summary className="flex cursor-pointer list-none flex-col gap-1 py-3.5 pr-4 pl-5 hover:bg-raised sm:flex-row sm:items-baseline sm:gap-4 [&::-webkit-details-marker]:hidden">
@@ -59,7 +60,16 @@ export default function FindingRow({ finding: f, index }) {
               </ul>
             </div>
           )}
-          {f.fix_diff && <Code label="Suggested fix" code={f.fix_diff} diff />}
+          {f.fix_diff && <Code label="Suggested fix" code={f.fix_diff} diff copy={fixText(f.fix_diff)} />}
+          {f.reprompt && (
+            <figure>
+              <figcaption className="mb-2 flex items-center justify-between gap-3 text-sm text-muted">
+                Ask your AI builder to fix it
+                <Copy text={f.reprompt} />
+              </figcaption>
+              <blockquote className="rounded-md border border-line bg-ink px-3 py-2.5 text-[14px] leading-relaxed text-muted">{f.reprompt}</blockquote>
+            </figure>
+          )}
           {f.refs?.length > 0 && (
             <ul className="flex flex-wrap gap-x-4 gap-y-1 text-sm">
               {f.refs.map((r) => (
@@ -85,11 +95,30 @@ function refLabel(url) {
   }
 }
 
-function Code({ label, code, diff, start, from, to }) {
+// The new code only: what someone pastes in place of the old lines.
+const fixText = (diff) => diff.split('\n').filter((l) => !l.startsWith('-')).map((l) => l.replace(/^\+ ?/, '')).join('\n')
+
+function Copy({ text }) {
+  const [done, setDone] = useState(false)
+  return (
+    <button
+      type="button"
+      onClick={() => navigator.clipboard?.writeText(text).then(() => { setDone(true); setTimeout(() => setDone(false), 1500) })}
+      className="shrink-0 rounded px-2 py-0.5 font-sans text-xs text-faint hover:bg-raised hover:text-fg print:hidden"
+    >
+      {done ? 'Copied' : 'Copy'}
+    </button>
+  )
+}
+
+function Code({ label, code, diff, start, from, to, copy }) {
   const numbered = start > 0
   return (
     <figure>
-      <figcaption className="mb-2 font-mono text-[12.5px] break-all text-faint">{label}</figcaption>
+      <figcaption className="mb-2 flex items-center justify-between gap-3 font-mono text-[12.5px] break-all text-faint">
+        {label}
+        {copy && <Copy text={copy} />}
+      </figcaption>
       <pre className="overflow-x-auto rounded-md border border-line bg-ink py-3 font-mono text-[12.5px] leading-relaxed">
         {code.split('\n').map((line, i) => {
           const n = start + i

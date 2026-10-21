@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { getReport, getStatus, startScan } from './api'
+import { getReport, getStatus, health, startScan } from './api'
 import InputCard from './components/InputCard'
 import ScanProgress from './components/ScanProgress'
 import Report from './components/Report'
@@ -22,7 +22,7 @@ export default function App() {
 
   return (
     <div className="mx-auto max-w-[880px] px-4 pb-24 sm:px-6">
-      <header className="flex items-center justify-between py-6">
+      <header className="flex items-center justify-between py-6 print:hidden">
         <a href="#" className="flex items-center gap-2 rounded-md">
           <img src="/favicon.svg" alt="" className="size-6" />
           <span className="font-semibold tracking-tight">VibeGuard</span>
@@ -71,7 +71,26 @@ function ScanView({ scanId }) {
   return <ScanProgress status={status} />
 }
 
+// Render's free server sleeps after 15 idle minutes and takes about a minute to wake: say so instead of looking broken.
+function useAwake() {
+  const [state, setState] = useState('checking')
+  useEffect(() => {
+    let stopped = false
+    const started = Date.now()
+    const slow = setTimeout(() => !stopped && setState((s) => (s === 'checking' ? 'waking' : s)), 1500)
+    const ping = () =>
+      health().then(
+        () => !stopped && setState('ready'),
+        () => !stopped && (Date.now() - started < 150_000 ? setTimeout(ping, 3000) : setState('down')),
+      )
+    ping()
+    return () => { stopped = true; clearTimeout(slow) }
+  }, [])
+  return state
+}
+
 function Home({ onSubmit }) {
+  const awake = useAwake()
   return (
     <section className="pt-10 sm:pt-16">
       <h1 className="max-w-[18ch] text-[2.5rem] leading-[1.08] font-semibold tracking-[-0.025em] text-balance sm:text-[3.25rem]">
@@ -82,6 +101,15 @@ function Home({ onSubmit }) {
         exactly what to change. VibeGuard only reads your code and deletes it when the scan ends.
       </p>
       <div className="mt-10">
+        {awake === 'waking' && (
+          <p role="status" className="mb-4 flex items-center gap-2.5 text-sm text-muted">
+            <span className="size-3 shrink-0 animate-spin rounded-full border-2 border-accent border-t-transparent" aria-hidden />
+            Waking the scanner. Free servers sleep when nobody's using them; this takes about a minute, and you can start your scan now.
+          </p>
+        )}
+        {awake === 'down' && (
+          <p role="alert" className="mb-4 text-sm text-crit">The scanner isn't answering right now. Try again in a few minutes.</p>
+        )}
         <InputCard onSubmit={onSubmit} />
       </div>
     </section>

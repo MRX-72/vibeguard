@@ -1,0 +1,11 @@
+**/.venv
+**/node_modules
+**/__pycache__
+**/.ruff_cache
+**/*.db
+backend/.env
+backend/rules/registry.json
+frontend
+.git
+.github
+.claude
