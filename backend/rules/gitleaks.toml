@@ -1,0 +1,24 @@
+# gitleaks' built-in rules, plus key formats that AI-built apps leak and gitleaks doesn't know yet.
+[extend]
+useDefault = true
+
+# Supabase's 2025 API keys. The secret key is the new service_role key (bypasses Row-Level Security);
+# the publishable key is public by design, but we still detect it so the report can say so instead of guessing.
+[[rules]]
+id = "supabase-secret-key"
+description = "Supabase secret key"
+regex = '''sb_secret_[A-Za-z0-9_-]{20,}'''
+keywords = ["sb_secret_"]
+
+[[rules]]
+id = "supabase-publishable-key"
+description = "Supabase publishable key"
+regex = '''sb_publishable_[A-Za-z0-9_-]{20,}'''
+keywords = ["sb_publishable_"]
+
+# Personal access token for the Supabase Management API: controls every project in the account.
+[[rules]]
+id = "supabase-access-token"
+description = "Supabase access token"
+regex = '''\bsbp_[a-f0-9]{40}\b'''
+keywords = ["sbp_"]

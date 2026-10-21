@@ -1,9 +1,10 @@
 import re
+import shutil
 from pathlib import Path
 
 from models import Finding
 
-from .base import Scanner, ScannerError, cwe_ids, humanize, lower, read_json, rel, snippet
+from .base import HYGIENE, Scanner, ScannerError, cwe_ids, humanize, lower, read_json, rel, snippet
 
 RULES = Path(__file__).resolve().parent.parent / "rules"
 REGISTRY = ["p/default", "p/owasp-top-ten"]  # fetched live unless rules/registry.json was downloaded
@@ -15,7 +16,6 @@ EXCLUDE = ["*.test.*", "*.spec.*", "__tests__", "__mocks__", "test", "tests", "e
            "storybook-static", "node_modules"]
 
 # Registry rules that are noise or hygiene for this audience, decided once here instead of on every report.
-HYGIENE = "Supply-chain hygiene for your build pipeline, not a vulnerability in your app."
 POLICY = {
     "unsafe-formatstring": ("noise", "JavaScript has no format-string exploits like C does: a variable in console.log only changes how the log line looks."),
     "github-actions-mutable-action-tag": ("hygiene", HYGIENE + " Pinning actions to a commit SHA protects CI from a hijacked action release."),
@@ -25,6 +25,10 @@ POLICY = {
     "renovate-missing-minimum-release-age": ("hygiene", HYGIENE + " A minimum release age protects you from freshly published malicious versions."),
     "express-check-csurf-middleware-usage": ("cookies", "This app never sets or reads cookies, so cross-site request forgery doesn't apply: "
                                              "browsers attach cookies to cross-site requests automatically, but never an Authorization header."),
+}
+# Rules whose CWE title ("Hardcoded credential") undersells what the code does: rule -> (title, impact)
+TITLES = {
+    "hardcoded-jwt-secret": ("JWT signing secret in code", "Anyone who reads this code can sign their own login tokens and act as any user, admins included."),
 }
 # GitHub Actions contexts outsiders control (issue titles, PR branches, comments…). Workflow inputs aren't among
 # them: only people with write access can dispatch a workflow.
@@ -48,6 +52,8 @@ class Semgrep(Scanner):
                 "--jobs", "1", "--max-target-bytes", "1000000", "--timeout", "10"]
         for pattern in EXCLUDE:
             args += ["--exclude", pattern]
+        if shutil.which("zizmor"):  # zizmor owns GitHub Actions: it knows which ${{ }} contexts outsiders control
+            args += ["--exclude", ".github"]
         for config in self.configs():
             args += ["--config", config]
         r = self.exec(args + [str(root)], ok=(0, 1, 2))
@@ -86,6 +92,8 @@ class Semgrep(Scanner):
             confidence="Needs review" if conf == "LOW" or audit else "Likely",
             refs=[u for u in (meta.get("references") or []) + [meta.get("source")] if isinstance(u, str) and u.startswith("http")][:4],
         )
+        if rule.split(".")[-1] in TITLES:
+            f.title, f.impact = TITLES[rule.split(".")[-1]]
         verdict, why = POLICY.get(rule.split(".")[-1], (None, ""))
         if verdict == "noise" or (verdict == "cookies" and not uses_cookies):
             f.is_false_positive, f.triage_note = True, why

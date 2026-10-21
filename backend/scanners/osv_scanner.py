@@ -225,12 +225,13 @@ def _declaration(root, folder, name, lockfile):
     bare = re.compile(rf"^\s*{re.escape(name)}\s*([=<>~!\[;]|$)", re.I)
     toml = re.compile(rf'^\s*name\s*=\s*"{re.escape(name)}"', re.I)  # uv.lock, poetry.lock
     listed = re.compile(rf'^\s*["\']{re.escape(name)}\s*([<>=!~\[;,]|["\'])', re.I)  # pyproject.toml dependency arrays
+    entry = re.compile(rf'^\s*["\']?/?{re.escape(name)}@')  # yarn.lock and pnpm-lock.yaml entries: axios@0.21.1:, "axios@npm:0.21.1":
     for candidate in [folder / m for m in MANIFESTS] + [lockfile]:
         try:
             lines = candidate.read_text(errors="replace").splitlines()
         except OSError:
             continue
         for n, text in enumerate(lines, 1):
-            if quoted.match(text) or (candidate.suffix != ".json" and (bare.match(text) or toml.match(text) or listed.match(text))) or f'"node_modules/{name}"' in text:
+            if quoted.match(text) or (candidate.suffix != ".json" and (bare.match(text) or toml.match(text) or listed.match(text) or entry.match(text))) or f'"node_modules/{name}"' in text:
                 return rel(root, candidate), n, text.strip()[:240]
     return rel(root, lockfile), 0, ""

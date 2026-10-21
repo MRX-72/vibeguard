@@ -28,10 +28,13 @@ Each scanner is optional. A missing binary is skipped and noted in the report.
 
 ```sh
 uv tool install --python 3.12 semgrep
-uv tool install --python 3.12 njsscan       # separate tool env: njsscan pins its own semgrep
-brew install gitleaks osv-scanner
-npm install -g retire
+uv tool install --python 3.12 bandit
+uv tool install --python 3.12 njsscan       # separate tool env: njsscan pins its own semgrep (local only, not deployed)
+brew install gitleaks osv-scanner trufflehog zizmor ast-grep
+npm install -g retire lockfile-lint
 ```
+
+Scanners with nothing to check are marked "not needed" (bandit without Python files, zizmor without GitHub workflows, lockfile-lint without an npm or yarn v1 lockfile). trufflehog only runs when the user ticks "Test any keys we find": it sends each key it recognises to its provider once to see if it's live.
 
 `uv tool` puts binaries in `~/.local/bin`; make sure it's on the `PATH` the backend runs with.
 
@@ -47,7 +50,7 @@ cd backend && .venv/bin/python rules/fetch_registry.py   # writes rules/registry
 cd backend && PATH="$HOME/.local/bin:$PATH" .venv/bin/python test_vibeguard.py
 ```
 
-Covers ingestion safety (zip traversal, size caps, cleanup), dedupe, secret classification and masking, and runs every installed scanner against `sample-repo/`.
+Covers ingestion safety (zip traversal, size caps, cleanup), dedupe, secret classification and masking, dependency tiers across npm/pnpm/yarn lockfiles, each ast-grep rule against a crafted positive and negative, and runs every installed scanner against `sample-repo/`, whose full expected report is pinned in the test.
 
 ## Environment
 

@@ -15,6 +15,7 @@ app.use("/api/auth", require("./routes/auth"));
 app.use("/api/chat", require("./routes/chat"));
 app.use("/api/upload", require("./routes/upload"));
 app.use("/api/calc", require("./routes/calc"));
+app.use("/api/billing", require("./routes/billing"));
 
 app.use((err, req, res, next) => {
   res.status(500).json({ error: err.message, stack: err.stack });

@@ -57,7 +57,9 @@ async def create_scan(request: Request, background: BackgroundTasks):
         label = getattr(form.get("payload"), "filename", None) or "upload.zip"
     scan_id = str(uuid4())
     db.create_scan(scan_id, source_type, label, pipeline.initial_steps())
-    background.add_task(pipeline.run_scan, scan_id, source_type, payload, label)
+    # opt-in: testing found keys sends them to their providers (§20)
+    verify = form.get("verify_secrets") in ("1", "true", "on")
+    background.add_task(pipeline.run_scan, scan_id, source_type, payload, label, verify)
     return {"scan_id": scan_id}
 
 

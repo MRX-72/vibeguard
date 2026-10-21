@@ -1,0 +1,36 @@
+id: supabase-edge-service-role-no-auth
+language: tsx
+severity: error
+message: Edge Function uses the service-role key without checking who's calling
+files: ["**/supabase/functions/**"]
+rule:
+  pattern: Deno.env.get($KEY)
+  inside:
+    kind: program
+    stopBy: end
+    # any sign the function checks its caller: a user lookup, a JWT check, or reading the Authorization/secret header
+    not:
+      regex: (?i)auth\.(getUser|getClaims)\s*\(|jwtVerify|verifyJwt|jwt\.verify|headers\.get\(\s*["'](authorization|x-[a-z0-9-]*(secret|token|key|signature))["']
+constraints:
+  KEY:
+    regex: SERVICE_ROLE|SECRET_KEY
+metadata:
+  severity: High
+  confidence: Likely
+  reason: Anyone who finds the function's URL gets admin access to your database.
+  cwe: CWE-306
+  explanation: >-
+    Supabase Edge Functions can be called by anyone with your project's anon key, and that key ships in your site's JavaScript.
+    This function builds a client with the service-role key, which ignores Row-Level Security, and nothing in the file checks
+    who the caller is: no auth.getUser(), no Authorization header check. So any visitor can make it read or change data as an admin.
+  impact: Any visitor can trigger this function and make it read, change or delete data in your database with full admin rights.
+  fix: |-
+    + const auth = req.headers.get("Authorization") ?? ""
+    + const { data: { user } } = await createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_ANON_KEY")!, {
+    +   global: { headers: { Authorization: auth } },
+    + }).auth.getUser()
+    + if (!user) return new Response("Unauthorized", { status: 401 })
+  reprompt: >-
+    In {file}, check the caller before using the service-role client: read the Authorization header, call supabase.auth.getUser()
+    with it, return 401 if there's no user, and only read or change rows that belong to that user.
+  refs: https://supabase.com/docs/guides/functions/auth

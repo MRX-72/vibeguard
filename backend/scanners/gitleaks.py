@@ -5,6 +5,7 @@ from models import Finding
 
 from .base import Scanner, classify_secret, mask_in, read_json, rel, snippet
 
+CONFIG = Path(__file__).resolve().parent.parent / "rules" / "gitleaks.toml"  # built-in rules + Supabase's 2025 key formats
 ENV_READ = {".py": 'os.environ["{var}"]', ".rb": 'ENV["{var}"]', ".go": 'os.Getenv("{var}")'}
 
 
@@ -16,38 +17,40 @@ class Gitleaks(Scanner):
         out = work / "gitleaks.json"
         # report goes to the sandbox, never stdout/logs: it contains the raw secrets
         self.exec([self.binary, "dir", str(root), "--report-format", "json", "--report-path", str(out),
-                   "--exit-code", "0", "--no-banner", "--log-level", "error", "--max-target-megabytes", "5"])
-        return [self._finding(root, r) for r in read_json(out, [])]
+                   "--exit-code", "0", "--no-banner", "--log-level", "error", "--max-target-megabytes", "5", "--config", str(CONFIG)])
+        return [secret_finding(self.name, root, rel(root, r["File"]), r["StartLine"], r["EndLine"], r.get("Secret") or "", r["RuleID"])
+                for r in read_json(out, [])]
 
-    def _finding(self, root, r):
-        file, secret = rel(root, r["File"]), r.get("Secret") or ""
-        info = classify_secret(secret, file, r["RuleID"])
-        code, start = snippet(root, file, r["StartLine"], r["EndLine"], context=0)
-        f = Finding(
-            source=self.name, kind="secret", severity=info["severity"], title=info["title"],
-            file=file, line=r["StartLine"], end_line=r["EndLine"], code_snippet=mask_in(code, secret), snippet_start=start,
-            raw_rule_id=r["RuleID"], cwe=["CWE-798"], money_risk=info["money_risk"],
-            is_false_positive=info["false_positive"], triage_note=info["note"], impact=info["impact"],
-            severity_reason=info["reason"] or "A working credential in source code can be copied by anyone who sees the code.",
-            refs=[info["rotate"]] if info["rotate"] else [],
+
+def secret_finding(source, root, file, line, end, secret, rule):
+    """A hardcoded secret, classified, masked, with rotation steps and a fix (shared with trufflehog)."""
+    info = classify_secret(secret, file, rule)
+    code, start = snippet(root, file, line, end, context=0)
+    f = Finding(
+        source=source, kind="secret", severity=info["severity"], title=info["title"],
+        file=file, line=line, end_line=end, code_snippet=mask_in(code, secret), snippet_start=start,
+        raw_rule_id=rule, cwe=["CWE-798"], money_risk=info["money_risk"],
+        is_false_positive=info["false_positive"], triage_note=info["note"], impact=info["impact"],
+        severity_reason=info["reason"] or "A working credential in source code can be copied by anyone who sees the code.",
+        refs=[info["rotate"]] if info["rotate"] else [],
+    )
+    f._secret = secret or None
+    if not info["false_positive"]:
+        dotenv = Path(file).name.startswith(".env")
+        what = info["what"]
+        f.explanation = (
+            f"{what[:1].upper()}{what[1:]} is written in plain text in {file}"
+            + (", an environment file that was committed with your code" if dotenv else "")
+            + ". Anyone who can read this code can copy it. Deleting the line doesn't make it safe again: the key is already in your "
+            "git history and maybe in deployed builds. Rotate it first"
+            + (f" at {info['rotate']}" if info["rotate"] else "")
+            + ", then load the new one from an environment variable."
         )
-        f._secret = secret or None
-        if not info["false_positive"]:
-            dotenv = Path(file).name.startswith(".env")
-            what = info["what"]
-            f.explanation = (
-                f"{what[:1].upper()}{what[1:]} is written in plain text in {file}"
-                + (", an environment file that was committed with your code" if dotenv else "")
-                + ". Anyone who can read this code can copy it. Deleting the line doesn't make it safe again: the key is already in your "
-                "git history and maybe in deployed builds. Rotate it first"
-                + (f" at {info['rotate']}" if info["rotate"] else "")
-                + ", then load the new one from an environment variable."
-            )
-            f.fix_diff = _fix(code, secret, file, info["env_var"], dotenv, _ignored(root, file))
-            f.reprompt = (f"Remove the hardcoded {what.removeprefix('your ')} from {file}. Read it from a server-side environment variable "
-                          f"named {info['env_var']}, and make every call that needs it from backend code (an API route or a Supabase "
-                          "Edge Function), never from code that runs in the browser.")
-        return f
+        f.fix_diff = _fix(code, secret, file, info["env_var"], dotenv, _ignored(root, file))
+        f.reprompt = (f"Remove the hardcoded {what.removeprefix('your ')} from {file}. Read it from a server-side environment variable "
+                      f"named {info['env_var']}, and make every call that needs it from backend code (an API route or a Supabase "
+                      "Edge Function), never from code that runs in the browser.")
+    return f
 
 
 def _ignored(root, file):

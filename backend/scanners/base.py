@@ -33,8 +33,15 @@ class Scanner:
     timeout = 180
     checked = ""  # what this run looked at, for the report ("412 source files"); one instance per scan
 
+    def __init__(self, verify_secrets=False):
+        self.verify_secrets = verify_secrets  # the user opted in to testing found keys with their providers (trufflehog)
+
     def available(self):
         return shutil.which(self.binary) is not None
+
+    def skip(self, root):
+        """(state, note) when this scanner shouldn't run on this code: "na" = nothing here for it, "skipped" = not checked."""
+        return None if self.available() else ("skipped", "not installed on this server")
 
     def run(self, root: Path, work: Path) -> list[Finding]:
         """Scan `root`; `work` is a scratch dir for report files (deleted with the sandbox)."""
@@ -80,6 +87,10 @@ def snippet(root, file, line, end=None, context=2, max_lines=12, max_cols=240):
     return textwrap.dedent("\n".join(picked)).rstrip(), start
 
 
+def has_files(root, *globs):
+    return any(p.is_file() and "node_modules" not in p.parts for g in globs for p in root.rglob(g))
+
+
 def read_json(path, default):
     """A scanner's JSON report; a half-written or garbled one is a scanner failure, not a crash."""
     try:
@@ -122,12 +133,16 @@ def from_cvss(score):
     return "Critical" if s >= 9 else "High" if s >= 7 else "Medium" if s >= 4 else "Low"
 
 
+HYGIENE = "Supply-chain hygiene for your build pipeline, not a vulnerability in your app."
+
 # --- secrets -----------------------------------------------------------------
 
 PLACEHOLDER = re.compile(
     r"(?i)^(<.*>|\$\{.*\}|\{\{.*\}\}|x{4,}|\*{4,}|0{6,}|(your|my|insert|enter|replace)[-_ ].*|.*(example|placeholder|changeme|change[-_]me|dummy|redacted|sample|fake|this[-_ ]?is[-_ ]?(a|not)|not[-_ ]?(a[-_ ]?)?real|for[-_ ]?testing).*)$"
 )
 TEST_PATH = re.compile(r"(?i)(^|/)(tests?|__tests__|spec|fixtures?|mocks?|examples?|samples?)(/|$)|\.(test|spec|example|sample)\.|\.example$|\.sample$")
+
+SUPABASE_KEYS = "https://supabase.com/dashboard/project/_/settings/api-keys"
 
 # prefix -> (what it is, severity, billed to you if abused, env var to move it to, where to rotate it, impact)
 PROVIDERS = {
@@ -157,9 +172,10 @@ PROVIDERS = {
             "Anyone with this key can send email as you, which gets your domain flagged as spam and burns your quota."),
     "AIza": ("Google API key", "Low", True, "GOOGLE_API_KEY", "https://console.cloud.google.com/apis/credentials",
              "If this key isn't restricted, anyone can use Google APIs (like Maps or Gemini) and bill them to your project."),
+    "sbp_": ("Supabase access token", "Critical", False, "SUPABASE_ACCESS_TOKEN", "https://supabase.com/dashboard/account/tokens",
+             "Anyone with this token can manage every Supabase project in your account: read and change databases, change settings or delete projects."),
     "sk-": ("OpenAI API key", "High", True, "OPENAI_API_KEY", "https://platform.openai.com/api-keys", None),
 }
-SUPABASE_KEYS = "https://supabase.com/dashboard/project/_/settings/api-keys"
 
 
 def mask(secret):
@@ -180,9 +196,10 @@ def jwt_claims(token):
     if len(parts) != 3 or not parts[0].startswith("eyJ"):
         return None
     try:
-        return json.loads(base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4)))
+        claims = json.loads(base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4)))
     except (ValueError, UnicodeDecodeError):
         return None
+    return claims if isinstance(claims, dict) else None
 
 
 def classify_secret(value, file="", rule=""):
@@ -195,18 +212,21 @@ def classify_secret(value, file="", rule=""):
     if len(value) < 8 or PLACEHOLDER.match(value):
         return out | {"false_positive": True, "note": "This looks like a placeholder, not a real secret."}
 
-    claims = jwt_claims(value)
-    if claims is not None:
-        role = claims.get("role")
-        if role == "service_role":
-            return _in_tests(file, out | {
-                "title": "Supabase service_role key exposed", "what": "the Supabase service_role key", "severity": "Critical",
-                "reason": "service_role keys bypass Row-Level Security entirely.", "env_var": "SUPABASE_SERVICE_ROLE_KEY",
-                "rotate": SUPABASE_KEYS,
-                "impact": "Anyone who finds this key can read, change or delete every row in your Supabase database. Row-Level Security doesn't apply to it."})
-        if role == "anon":
-            return out | {"title": "Supabase anon key", "severity": "Low", "false_positive": True,
-                          "note": "Supabase's anon key is public by design and safe to ship to browsers, as long as Row-Level Security is on for every table."}
+    # Supabase keys come in two generations: JWTs with a role claim, and since 2025 sb_secret_/sb_publishable_ keys
+    claims = jwt_claims(value) or {}
+    role = claims.get("role")
+    if role == "service_role" or value.startswith("sb_secret_"):
+        kind = "service_role" if role else "secret"
+        return _in_tests(file, out | {
+            "title": f"Supabase {kind} key exposed", "what": f"the Supabase {kind} key", "severity": "Critical",
+            "reason": f"Supabase {kind} keys bypass Row-Level Security entirely.",
+            "env_var": "SUPABASE_SERVICE_ROLE_KEY" if role else "SUPABASE_SECRET_KEY", "rotate": SUPABASE_KEYS,
+            "impact": "Anyone who finds this key can read, change or delete every row in your Supabase database. Row-Level Security doesn't apply to it."})
+    if role == "anon" or value.startswith("sb_publishable_"):
+        kind = "anon" if role else "publishable"
+        return out | {"title": f"Supabase {kind} key", "severity": "Low", "false_positive": True,
+                      "note": f"Supabase's {kind} key is public by design and safe to ship to browsers, as long as Row-Level Security is on for every table."}
+    if claims:
         out |= {"title": "Hardcoded JWT", "what": "this token", "env_var": "AUTH_TOKEN"}
     else:
         for prefix, (what, severity, money, env_var, rotate, impact) in PROVIDERS.items():

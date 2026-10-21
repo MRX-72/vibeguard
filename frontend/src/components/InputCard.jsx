@@ -16,6 +16,7 @@ export default function InputCard({ onSubmit }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
   const [dragging, setDragging] = useState(false)
+  const [verify, setVerify] = useState(false)
 
   const ready = { paste: code.trim(), zip: file, github: url.trim() }[tab]
 
@@ -24,6 +25,7 @@ export default function InputCard({ onSubmit }) {
     form.append('source_type', sourceType)
     if (payload != null) form.append('payload', payload)
     if (sourceType === 'paste' && filename.trim()) form.append('filename', filename.trim())
+    if (verify) form.append('verify_secrets', '1')
     setBusy(true)
     setError(null)
     try {
@@ -133,6 +135,21 @@ export default function InputCard({ onSubmit }) {
               <p className="text-sm text-faint">Private repositories aren't supported. We clone the default branch and delete it after the scan.</p>
             </div>
           )}
+
+          <label className="mt-4 flex cursor-pointer items-start gap-3 text-sm">
+            <input
+              type="checkbox"
+              checked={verify}
+              onChange={(e) => setVerify(e.target.checked)}
+              className="mt-0.5 size-4 shrink-0 accent-accent"
+            />
+            <span>
+              <span className="text-fg">Test any keys we find</span>
+              <span className="mt-0.5 block text-faint">
+                Sends each key to its own provider once, read-only, to see if it still works. Only for code you own.
+              </span>
+            </span>
+          </label>
 
           {error && <p role="alert" className="mt-3 text-sm text-crit">{error}</p>}
 

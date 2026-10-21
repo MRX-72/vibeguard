@@ -1,0 +1,36 @@
+id: stripe-webhook-unsigned
+language: tsx
+severity: error
+message: Stripe webhook handled without checking Stripe's signature
+rule:
+  any:
+    - kind: string
+    - kind: template_string
+  regex: ^["'`](checkout\.session\.(async_payment_)?(completed|succeeded)|payment_intent\.succeeded|invoice\.(paid|payment_succeeded)|customer\.subscription\.(created|updated|deleted))["'`]$
+  inside:
+    kind: program
+    stopBy: end
+    not:
+      regex: constructEvent|stripe-signature|verifyHeader
+metadata:
+  severity: High
+  confidence: Likely
+  reason: It's direct money loss, and webhook URLs are easy to guess.
+  cwe: CWE-345
+  money_risk: true
+  explanation: >-
+    This code reacts to Stripe payment events, but nothing in the file verifies the Stripe-Signature header with
+    stripe.webhooks.constructEvent(). Webhook URLs are easy to guess, so anyone can POST a fake "payment succeeded" event.
+  impact: Anyone can fake a successful payment and get paid features, credits or orders for free.
+  fix: |-
+    - const event = req.body
+    + const event = stripe.webhooks.constructEvent(
+    +   rawBody, // the unparsed request body, e.g. from express.raw()
+    +   req.headers["stripe-signature"],
+    +   process.env.STRIPE_WEBHOOK_SECRET,
+    + )
+  reprompt: >-
+    In {file}, verify every Stripe webhook before trusting it: read the raw request body, call
+    stripe.webhooks.constructEvent(rawBody, the stripe-signature header, STRIPE_WEBHOOK_SECRET from the environment),
+    return 400 if it throws, and only then handle the event.
+  refs: https://docs.stripe.com/webhooks#verify-official-libraries

@@ -30,7 +30,9 @@ export default function FindingRow({ finding: f, index }) {
           {f.impact && <p className="text-[17px] leading-relaxed text-pretty">{f.impact}</p>}
 
           <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-sm">
-            <span className={`rounded px-2 py-0.5 text-xs font-medium ${CONFIDENCE[f.confidence]}`}>{f.confidence}</span>
+            <span className={`rounded px-2 py-0.5 text-xs font-medium ${CONFIDENCE[f.confidence]}`}>
+              {f.kind === 'secret' && f.confidence === 'Confirmed reachable' ? 'Confirmed live' : f.confidence}
+            </span>
             {f.detected_by?.length > 0 && <span className="text-faint">Found by {f.detected_by.join(', ')}</span>}
           </div>
 

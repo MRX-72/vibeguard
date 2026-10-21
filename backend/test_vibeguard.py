@@ -113,6 +113,11 @@ def test_classify_secret():
     assert live["severity"] == "Critical" and live["money_risk"]
     assert classify_secret("AIzaSyA" + "b" * 32)["severity"] == "Low"
     assert classify_secret("sk-proj-" + "Ab3" * 16, "tests/fixtures/keys.js")["severity"] == "Medium"
+    # Supabase's 2025 key formats: secret = the new service_role, publishable = the new anon key
+    secret = classify_secret("sb_secret_" + "N7UND0Ugj" * 3)
+    assert secret["severity"] == "Critical" and secret["env_var"] == "SUPABASE_SECRET_KEY" and "Row-Level" in secret["reason"]
+    assert classify_secret("sb_publishable_" + "ACJWlzQH" * 4)["false_positive"]
+    assert classify_secret("sbp_" + "a1" * 20)["severity"] == "Critical"
 
 
 def test_mask_in_catches_truncated_copies():
@@ -162,6 +167,65 @@ def test_scoring():
     assert scoring.grade(25) == "B" and scoring.grade(26) == "C"
 
 
+def test_verified_key_beats_placeholder_guess():
+    """A key its provider accepted is live, whatever its text looks like: never noise, always Critical."""
+    guess = _f(source="gitleaks", kind="secret", severity="Low", line=3, is_false_positive=True, triage_note="placeholder")
+    live = _f(source="trufflehog", kind="secret", severity="Critical", line=3, confidence="Confirmed reachable", evidence=["Tested with Groq: live"])
+    (out,) = normalize.normalize([guess, live])
+    assert not out.is_false_positive and out.severity == "Critical" and out.confidence == "Confirmed reachable"
+    assert out.detected_by == ["gitleaks", "trufflehog"] and out.evidence[0].startswith("Tested with")
+
+
+def test_trufflehog_masks_every_part_and_is_opt_in():
+    from scanners.trufflehog import TruffleHog
+    root = Path(tempfile.mkdtemp())
+    key_id, secret = "AKIA" + "Q7Z2" * 4, "wJalrXUtnFEMI" + "K7MDENGbPxRfiCY" * 2
+    (root / "aws.js").write_text(f'const s3 = new S3({{ accessKeyId: "{key_id}", secretAccessKey: "{secret}" }})\n')
+    assert TruffleHog().skip(root) == ("skipped", "off")
+    record = {"SourceMetadata": {"Data": {"Filesystem": {"file": str(root / "aws.js"), "line": 1}}}, "DetectorName": "AWS",
+              "Verified": True, "Raw": key_id, "RawV2": key_id + ":" + secret, "SecretParts": {"key": key_id, "secret": secret}}
+    f = TruffleHog(verify_secrets=True)._finding(root, record)
+    assert f.severity == "Critical" and f.confidence == "Confirmed reachable" and f.title == "Exposed AWS access key"
+    out = json.dumps(normalize.normalize([f])[0].model_dump())
+    assert key_id[:16] not in out and secret[:16] not in out
+
+
+def test_lockfile_graphs_agree():
+    """pnpm (v6, v9) and yarn (v1, berry) lockfiles give the same runtime/build split as package-lock, aliases included."""
+    from scanners import npm_deps
+    manifest = json.dumps({"dependencies": {"express": "4", "sw-cjs": "npm:string-width@4"}, "devDependencies": {"vite": "5"}})
+    locks = {
+        "package-lock.json": json.dumps({"lockfileVersion": 3, "packages": {
+            "": {}, "node_modules/express": {"dependencies": {"qs": "6"}}, "node_modules/qs": {},
+            "node_modules/sw-cjs": {"name": "string-width", "dependencies": {"ansi-regex": "5"}}, "node_modules/ansi-regex": {},
+            "node_modules/vite": {"dev": True, "dependencies": {"esbuild": "0.21"}}, "node_modules/esbuild": {"dev": True}}}),
+        "pnpm-lock.yaml": "lockfileVersion: '9.0'\nimporters:\n  .:\n    dependencies:\n      express: {specifier: '4', version: 4.21.0}\n"
+                          "      sw-cjs: {specifier: npm:string-width@4, version: string-width@4.2.3}\n"
+                          "snapshots:\n  express@4.21.0:\n    dependencies:\n      qs: 6.13.0\n  qs@6.13.0: {}\n"
+                          "  string-width@4.2.3:\n    dependencies:\n      ansi-regex: 5.0.1\n  ansi-regex@5.0.1: {}\n"
+                          "  vite@5.4.0(@types/node@20.0.0):\n    dependencies:\n      esbuild: 0.21.5\n  esbuild@0.21.5: {}\n",
+        "pnpm-lock-v6.yaml": "lockfileVersion: '6.0'\npackages:\n  /express@4.21.0:\n    dependencies:\n      qs: 6.13.0\n    dev: false\n"
+                             "  /qs@6.13.0:\n    dev: false\n  /vite@5.4.0:\n    dependencies:\n      esbuild: 0.21.5\n    dev: true\n  /esbuild@0.21.5:\n    dev: true\n",
+        "yarn.lock": 'express@4:\n  version "4.21.0"\n  dependencies:\n    qs "^6"\n\nqs@^6:\n  version "6.13.0"\n\n'
+                     '"sw-cjs@npm:string-width@4":\n  version "4.2.3"\n  dependencies:\n    ansi-regex "^5"\n\n'
+                     'vite@5:\n  version "5.4.0"\n  dependencies:\n    esbuild "^0.21"\n\n'
+                     'esbuild@^0.21:\n  version "0.21.5"\n\nansi-regex@^5:\n  version "5.0.1"\n',
+        "yarn-berry.lock": '__metadata:\n  version: 8\n\n"express@npm:4":\n  version: 4.21.0\n  dependencies:\n    qs: "npm:^6"\n\n'
+                           '"vite@npm:5":\n  version: 5.4.0\n  dependencies:\n    esbuild: "npm:^0.21"\n\n'
+                           '"qs@npm:^6":\n  version: 6.13.0\n\n"esbuild@npm:^0.21":\n  version: 0.21.5\n',
+    }
+    for lock, text in locks.items():
+        root = Path(tempfile.mkdtemp())
+        (root / "package.json").write_text(manifest)
+        (root / lock.replace("-v6", "").replace("-berry", "")).write_text(text)
+        p = npm_deps.Project(root)
+        assert p.has_graph and p.classify("qs") == ("runtime", "express"), lock
+        assert p.classify("esbuild")[0] == "dev" and p.classify("vite")[0] == "dev", lock
+        if "ansi-regex" in text:
+            assert p.classify("string-width") == ("runtime", "sw-cjs") and p.classify("ansi-regex")[0] == "runtime", lock
+    assert npm_deps.npm_aliases(json.loads(locks["package-lock.json"])) == ["sw-cjs:string-width"]
+
+
 def test_semgrep_policy():
     """Curated rule verdicts: noise is filtered, hygiene is Low, Actions injection is judged by its inputs."""
     from scanners.semgrep import Semgrep
@@ -203,8 +267,21 @@ def test_npm_dependency_tiers():
     assert npm_deps.min_version("^0.21.1") == "0.21.1" and npm_deps.min_version("latest") is None
 
 
+# The demo app's full expected report: every planted issue at its severity, every decoy filtered, nothing else.
+# Phase 4/5 changes that add, drop or re-rate anything must update this on purpose.
+DEMO = {
+    (".env", 3, "Critical"), (".env", 4, "High"), ("src/lib/ai.js", 5, "High"),  # service_role + OpenAI keys
+    ("server/routes/auth.js", 10, "High"),  # JWT signing secret
+    ("server/routes/calc.js", 5, "High"),  # eval
+    ("server/routes/billing.js", 8, "High"),  # unsigned Stripe webhook (ast-grep)
+    ("supabase/functions/delete-account/index.ts", 12, "High"),  # service-role Edge Function with no caller check (ast-grep)
+}
+DEMO_NOISE = {(".env", 2), ("server/index.js", 4)}  # anon key (public by design), CSRF in an app without cookies
+DEMO_DEPS = {"axios@0.21.1", "express@4.17.1", "jsonwebtoken@8.5.1", "lodash@4.17.15", "multer@1.4.2"}
+
+
 def test_scanners_on_sample_repo():
-    """Integration: whatever scanners are installed must find the planted issues, and never leak a secret."""
+    """Integration: the demo app's report is exactly what we expect, and never leaks a secret."""
     installed = [s for s in (cls() for cls in SCANNERS) if s.available()]
     if not installed:
         print("   (no scanners installed, skipped)")
@@ -212,23 +289,101 @@ def test_scanners_on_sample_repo():
     with ingest.sandbox("demo", None) as root:
         work = root.parent / "work"
         work.mkdir()
-        raw = [f for s in installed for f in s.run(root, work)]
+        raw = [f for s in installed if not s.skip(root) for f in s.run(root, work)]
         env_secrets = [line.split("=", 1)[1] for line in (root / ".env").read_text().splitlines() if "KEY=" in line]
         out = normalize.normalize(raw)
     names = {s.name for s in installed}
     by = {(f.file, f.line): f for f in out}
+    if {"gitleaks", "semgrep", "osv-scanner", "ast-grep"} <= names:
+        code = {(f.file, f.line, f.severity) for f in out if f.kind != "dependency" and not f.is_false_positive}
+        expected = DEMO | ({("server/index.js", 9, "Medium")} if "njsscan" in names else set())  # wildcard CORS (njsscan only, until Phase 4)
+        assert code == expected, f"missing {expected - code}, unexpected {code - expected}"
+        assert {(f.file, f.line) for f in out if f.is_false_positive} == DEMO_NOISE
+        assert {f.package for f in out if f.kind == "dependency"} == DEMO_DEPS
     if "gitleaks" in names:
-        assert by[(".env", 3)].severity == "Critical" and "service_role" in by[(".env", 3)].title
-        assert by[(".env", 2)].is_false_positive  # anon key
-        assert ("src/lib/ai.js", 5) in by
+        assert "service_role" in by[(".env", 3)].title and by[(".env", 2)].is_false_positive
     if "semgrep" in names:
         assert by[("server/routes/calc.js", 5)].cwe == ["CWE-95"]
+        assert by[("server/routes/auth.js", 10)].title == "JWT signing secret in code"
     if "osv-scanner" in names:
         axios = next(f for f in out if f.package == "axios@0.21.1")
         assert axios.file == "package.json" and axios.fix_diff.startswith('- "axios": "^0.21.1"')
+    if "ast-grep" in names:
+        hook = by[("server/routes/billing.js", 8)]
+        assert hook.money_risk and "constructEvent" in hook.fix_diff and "server/routes/billing.js" in hook.reprompt
     dumped = json.dumps([f.model_dump() for f in out])
     for secret in env_secrets:
         assert secret[:20] not in dumped, "a secret value leaked into the report"
+
+
+def _run(scanner, files):
+    root = Path(tempfile.mkdtemp())
+    for name, text in files.items():
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_text(text)
+    work = root.parent / (root.name + "-work")
+    work.mkdir()
+    return scanner.skip(root), (None if scanner.skip(root) else normalize.normalize(scanner.run(root, work)))
+
+
+def test_ast_grep_rules():
+    """Each structural rule fires on its crafted positive and stays quiet on its negative."""
+    from scanners.astgrep import AstGrep
+    if not AstGrep().available():
+        return print("   (ast-grep not installed, skipped)")
+    edge = 'Deno.serve(async (req) => {{\n  {check}\n  const db = createClient(url, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!)\n}})\n'
+    hook = 'app.post("/hook", async (req, res) => {{\n  {check}\n  if (event.type === "checkout.session.completed") grant(event)\n}})\n'
+    _, out = _run(AstGrep(), {
+        "supabase/functions/open/index.ts": edge.format(check=""),
+        "supabase/functions/checked/index.ts": edge.format(check="const { data: { user } } = await anon.auth.getUser()"),
+        "supabase/functions/internal/index.ts": edge.format(check='if (req.headers.get("Authorization") !== expected) return'),
+        "app/api/me/route.ts": "export async function GET() {\n  const { data } = await supabase.auth.getSession()\n}\n",
+        "src/lib/session.ts": "export const token = () => supabase.auth.getSession()\n",  # browser code: fine
+        "src/routes/fn.tsx": "export const f = createServerFn().handler(async () => {\n  await supabase.auth.getSession()\n})\n",
+        "src/actions.ts": "'use server'\nexport async function save() {\n  await supabase.auth.getSession()\n}\n",
+        "server/hook.js": hook.format(check="const event = req.body"),
+        "server/hook-ok.js": hook.format(check='const event = stripe.webhooks.constructEvent(raw, req.headers["stripe-signature"], secret)'),
+    })
+    hits = {(f.file, f.raw_rule_id.split(".")[-1]) for f in out}
+    assert hits == {
+        ("supabase/functions/open/index.ts", "supabase-edge-service-role-no-auth"),
+        ("app/api/me/route.ts", "supabase-getsession-on-server"),
+        ("src/routes/fn.tsx", "supabase-getsession-in-server-fn"),
+        ("src/actions.ts", "supabase-getsession-in-server-fn"),
+        ("server/hook.js", "stripe-webhook-unsigned"),
+    }, hits
+    assert all(f.explanation and f.impact and f.fix_diff and f.reprompt and f.cwe for f in out)
+
+
+def test_zizmor_bandit_lockfile_lint():
+    from scanners.bandit import Bandit
+    from scanners.lockfile_lint import LockfileLint
+    from scanners.zizmor import Zizmor
+    if Zizmor().available():
+        wf = ("on:\n  pull_request_target:\n  issues:\njobs:\n  greet:\n    runs-on: ubuntu-latest\n    steps:\n"
+              "      - uses: actions/checkout@v4\n      - run: echo \"${{ github.event.issue.title }}\"\n")
+        _, out = _run(Zizmor(), {".github/workflows/triage.yml": wf})
+        sev = {f.raw_rule_id: f.severity for f in out}
+        assert sev["zizmor.template-injection"] == "High" and sev["zizmor.dangerous-triggers"] == "High"
+        assert sev["zizmor.unpinned-uses"] == "Low"  # hygiene
+        assert Zizmor().skip(Path(tempfile.mkdtemp())) == ("na", "no GitHub workflows")
+    if Bandit().available():
+        app = ('import subprocess, yaml\nfrom flask import Flask, request\napp = Flask(__name__)\n'
+               '@app.route("/r")\ndef r():\n    return subprocess.check_output("ls " + request.args["d"], shell=True)\n'
+               'def load(data):\n    return yaml.load(data, Loader=yaml.Loader)\n')
+        noise = "import random\nassert random.random() < 2\ntry:\n    pass\nexcept Exception:\n    pass\n"
+        _, out = _run(Bandit(), {"api/app.py": app, "api/util.py": noise, "tests/test_app.py": app})
+        assert {(f.file, f.cwe[0]) for f in out} == {("api/app.py", "CWE-78"), ("api/app.py", "CWE-502")}, [(f.file, f.cwe) for f in out]
+    if LockfileLint().available():
+        lock = {"lockfileVersion": 3, "packages": {
+            "": {"dependencies": {"sw-cjs": "npm:string-width@4"}},
+            "node_modules/left-pad": {"version": "1.3.0", "resolved": "http://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz",
+                                      "integrity": "sha512-" + "A" * 86 + "=="},
+            "node_modules/sw-cjs": {"version": "4.2.3", "resolved": "https://registry.npmjs.org/string-width/-/string-width-4.2.3.tgz",
+                                    "integrity": "sha512-" + "B" * 86 + "=="}}}
+        _, out = _run(LockfileLint(), {"package-lock.json": json.dumps(lock, indent=2)})
+        assert [(f.raw_rule_id, f.severity) for f in out] == [("lockfile-lint.protocol", "Medium")], [f.raw_rule_id for f in out]
+        assert out[0].line > 0 and "left-pad" in out[0].explanation
 
 
 if __name__ == "__main__":

@@ -9,6 +9,8 @@ import json
 import re
 from pathlib import Path
 
+import yaml
+
 # Build/test tooling. AI builders often list these under "dependencies" (Lovable puts vite there), but none of
 # them ships in the browser bundle or runs in production.
 BUILD_TOOLS = {
@@ -51,7 +53,7 @@ class Project:
                     self.direct_dev.add(name)
         self.graph = {}  # name -> set of dependency names (all versions merged; good enough for "does it ship")
         self.dev_flagged = set()  # lockfile says dev-only
-        self.has_graph = self._read_package_lock() | self._read_bun_lock()
+        self.has_graph = self._read_package_lock() | self._read_bun_lock() | self._read_pnpm_lock() | self._read_yarn_lock()
         self.via = self._reach([n for n in self.direct if n not in self.direct_dev])  # runtime pkg -> direct dep pulling it in
         self.dev_via = self._reach(sorted(self.direct_dev), stop_at_build=False)  # same, for build/test tooling
 
@@ -72,10 +74,14 @@ class Project:
         for key, pkg in lock["packages"].items():
             if not key:
                 continue
-            name = pkg.get("name") or key.rsplit("node_modules/", 1)[-1]
-            self.graph.setdefault(name, set()).update(_deps(pkg))
-            if pkg.get("dev") or pkg.get("devOptional"):
-                self.dev_flagged.add(name)
+            installed = key.rsplit("node_modules/", 1)[-1]
+            name = pkg.get("name") or installed  # differs for npm aliases: "string-width-cjs" installs string-width
+            for n in {installed, name}:
+                self.graph.setdefault(n, set()).update(_deps(pkg))
+                if pkg.get("dev") or pkg.get("devOptional"):
+                    self.dev_flagged.add(n)
+            if name != installed:
+                self.graph[installed].add(name)  # the alias ships the real package
         return True
 
     def _read_bun_lock(self):
@@ -95,6 +101,55 @@ class Project:
             self.graph.setdefault(name, set()).update(_deps(meta))
         return bool(self.graph)
 
+    def _read_pnpm_lock(self):
+        try:  # pnpm-lock.yaml can be megabytes: use libyaml when PyYAML has it
+            lock = yaml.load((self.folder / "pnpm-lock.yaml").read_text(), Loader=getattr(yaml, "CSafeLoader", yaml.SafeLoader))
+        except (OSError, yaml.YAMLError):
+            return False
+        if not isinstance(lock, dict):
+            return False
+        # v9: graph under "snapshots", keyed "name@1.2.3(peer@x)"; v6: under "packages", keyed "/name@1.2.3", with dev flags
+        for importer in (lock.get("importers") or {}).values():  # aliases: string-width-cjs -> version "string-width@4.2.3"
+            for section in ("dependencies", "optionalDependencies", "devDependencies"):
+                for alias, info in ((importer or {}).get(section) or {}).items():
+                    version = str(info.get("version", "")) if isinstance(info, dict) else ""
+                    if "@" in version[1:] and spec_name(version) != alias:
+                        self.graph.setdefault(alias, set()).add(spec_name(version))
+        for key, meta in (lock.get("snapshots") or lock.get("packages") or {}).items():
+            name = spec_name(str(key).lstrip("/").split("(", 1)[0])
+            self.graph.setdefault(name, set()).update(_deps(meta or {}))
+            if (meta or {}).get("dev") is True:
+                self.dev_flagged.add(name)
+        return bool(self.graph)
+
+    def _read_yarn_lock(self):
+        """yarn.lock, classic (v1) or berry: unindented headers list the specs, 4-space lines under "dependencies:" name the deps."""
+        try:
+            lines = (self.folder / "yarn.lock").read_text().splitlines()
+        except OSError:
+            return False
+        names, section = [], None
+        for line in lines:
+            if not line.strip() or line.lstrip().startswith("#"):
+                continue
+            indent = len(line) - len(line.lstrip())
+            if indent == 0:
+                specs = [s.strip().strip('"') for s in line.rstrip(":").split(",")]
+                names = {spec_name(s) for s in specs} - {"__metadata"}
+                for n in names:
+                    self.graph.setdefault(n, set())
+                for s in specs:  # "string-width-cjs@npm:string-width@^4.2.0": the alias ships the real package
+                    alias, _, real = s.partition("@npm:")
+                    if real and spec_name(real) != spec_name(alias):
+                        self.graph[spec_name(alias)].add(spec_name(real))
+            elif indent == 2:
+                section = line.strip().rstrip(":")
+            elif indent == 4 and section in ("dependencies", "optionalDependencies"):
+                dep = line.strip().split(" ", 1)[0].rstrip(":").strip('"')
+                for n in names:
+                    self.graph[n].add(dep)
+        return bool(self.graph)
+
     def _reach(self, roots, stop_at_build=True):
         """Breadth-first walk from `roots`, remembering which root each package came through.
         A framework can depend on its own bundler (TanStack Start -> vite); that subtree still doesn't ship."""
@@ -107,6 +162,26 @@ class Project:
                     via[dep] = via[name]
                     queue.append(dep)
         return via
+
+
+def spec_name(spec):
+    """'react@18.3.1', '@scope/pkg@npm:^1', 'alias@npm:real@4', pnpm v5's '/react/18.3.1' -> the package name."""
+    at = spec.find("@", 1)
+    return spec[:at] if at > 0 else spec.rsplit("/", 1)[0] if spec.count("/") > spec.startswith("@") else spec
+
+
+def npm_aliases(lock):
+    """'string-width-cjs:string-width' for every npm alias in a package-lock (lockfile-lint would flag them as injection)."""
+    out = set()
+    for key, pkg in (lock.get("packages") or {}).items():
+        for section in ("dependencies", "devDependencies", "optionalDependencies", "peerDependencies"):
+            for name, spec in (pkg.get(section) or {}).items():
+                if isinstance(spec, str) and spec.startswith("npm:"):
+                    out.add(f"{name}:{spec_name(spec[4:])}")
+        installed = key.rsplit("node_modules/", 1)[-1]
+        if key and pkg.get("name") and installed != pkg["name"]:
+            out.add(f"{installed}:{pkg['name']}")
+    return sorted(out)
 
 
 def _deps(pkg):

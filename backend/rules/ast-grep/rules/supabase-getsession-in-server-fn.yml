@@ -1,0 +1,31 @@
+id: supabase-getsession-in-server-fn
+language: tsx
+severity: warning
+message: Server code trusts supabase.auth.getSession()
+rule:
+  pattern: $CLIENT.auth.getSession()
+  # TanStack Start server functions and Next.js server actions run on the server wherever the file lives
+  inside:
+    stopBy: end
+    any:
+      - kind: call_expression
+        regex: ^createServerFn\b
+      - kind: program
+        regex: ^\s*(//[^\n]*\n\s*)*["']use server["']
+metadata:
+  severity: Medium
+  confidence: Likely
+  reason: An attacker needs a crafted request, and it only matters where the session decides access.
+  cwe: CWE-287
+  explanation: >-
+    On the server, getSession() reads the session from the request's cookies or storage without checking it with Supabase,
+    so a tampered or expired token passes. Supabase's docs say never to trust it in server code; getUser() (or getClaims())
+    verifies the token.
+  impact: Someone can send a forged session and your server code treats them as a logged-in user.
+  fix: |-
+    - const { data: { session } } = await supabase.auth.getSession()
+    + const { data: { user } } = await supabase.auth.getUser()
+  reprompt: >-
+    In {file}, replace supabase.auth.getSession() with supabase.auth.getUser() for every server-side auth decision,
+    and use the returned user (not session.user) to decide what the caller may do.
+  refs: https://supabase.com/docs/reference/javascript/auth-getsession

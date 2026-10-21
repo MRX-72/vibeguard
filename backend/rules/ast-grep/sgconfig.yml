@@ -1,0 +1,5 @@
+# ast-grep project config. Rules live in rules/, one file per check; the scanner reads their metadata for the report.
+ruleDirs: [rules]
+# Parse every JS/TS flavour with the TSX grammar (a superset), so each rule is written once.
+languageGlobs:
+  tsx: ["*.ts", "*.tsx", "*.js", "*.jsx", "*.mjs", "*.cjs", "*.mts", "*.cts"]

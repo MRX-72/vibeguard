@@ -6,7 +6,7 @@ from models import SEVERITIES, Finding
 from scanners.base import TEST_PATH, lower, mask, mask_in, worst
 
 # Which scanner's version of a duplicate we keep (first wins): the most specific source, with the most precise line.
-PRIORITY = ["custom", "gitleaks", "semgrep", "njsscan", "osv-scanner", "retire.js"]
+PRIORITY = ["custom", "gitleaks", "trufflehog", "ast-grep", "semgrep", "bandit", "njsscan", "zizmor", "osv-scanner", "lockfile-lint", "retire.js"]
 CONFIDENCE = ["Confirmed reachable", "Likely", "Needs review"]
 
 # Plain-English title + impact per weakness, used when a scanner only gives rule-speak.
@@ -26,6 +26,7 @@ PLAIN = {
     "CWE-287": ("Broken authentication", "Attackers may be able to log in as someone else."),
     "CWE-306": ("Missing authentication", "Anyone can use this feature without logging in."),
     "CWE-312": ("Secret stored in clear text", "Anyone who gets hold of this file or database can read the secret directly."),
+    "CWE-295": ("Certificate checks turned off", "Anyone on the network can intercept or change this traffic, including passwords and tokens."),
     "CWE-319": ("Data sent unencrypted", "People on the same network can read or change this traffic."),
     "CWE-321": ("Hardcoded secret key", "Anyone with this key can forge tokens or decrypt data your app protects with it."),
     "CWE-326": ("Weak encryption", "Data protected this way can be decrypted with modest effort."),
@@ -135,6 +136,8 @@ def _same(a, b):
 
 
 def _absorb(keep: Finding, other: Finding):
+    if other.kind == "secret" and other.confidence == "Confirmed reachable":  # its provider accepted it: never a placeholder
+        keep.is_false_positive, keep.triage_note, keep.evidence = False, "", other.evidence + keep.evidence
     if not keep.is_false_positive and SEVERITIES.index(other.severity) < SEVERITIES.index(keep.severity):
         # a "public by design" verdict on the value outranks a generic rule's severity; otherwise the worst rating wins, with its reason
         keep.severity, keep.severity_reason = other.severity, other.severity_reason or keep.severity_reason
@@ -175,8 +178,8 @@ def _secretish(s):
 
 def _plain(f):
     known = next((PLAIN[c] for c in f.cwe if c in PLAIN), None)
-    if known and f.source in ("semgrep", "njsscan"):
-        f.title = known[0]  # "Code injection via eval()" beats "Code string concat"
+    if known and f.source in ("semgrep", "njsscan", "bandit") and not f.impact:
+        f.title = known[0]  # "Code injection via eval()" beats "Code string concat"; a scanner that wrote its own impact chose its title too
     if not f.impact:
         f.impact = known[1] if known and f.kind != "dependency" else SECRET_IMPACT if f.kind == "secret" else DEP_IMPACT if f.kind == "dependency" else DEFAULT_IMPACT
         if f.kind == "dependency" and known:

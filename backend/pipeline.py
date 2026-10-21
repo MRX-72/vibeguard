@@ -21,7 +21,7 @@ def initial_steps():
 _slot = threading.Semaphore(1)
 
 
-def run_scan(scan_id, source_type, payload, label=None):
+def run_scan(scan_id, source_type, payload, label=None, verify_secrets=False):
     steps = initial_steps()
     with _slot:
         try:
@@ -35,7 +35,7 @@ def run_scan(scan_id, source_type, payload, label=None):
                 work.mkdir()
                 raw = []
                 for scanner in SCANNERS:
-                    raw += _run_one(scan_id, scanner(), root, work, steps)
+                    raw += _run_one(scan_id, scanner(verify_secrets=verify_secrets), root, work, steps)
                 if not any(s["state"] == "done" for s in steps[1:]):
                     # an empty report here would read as "all clear", which would be a lie
                     raise ingest.IngestError("None of the scanners could run on this server, so nothing was checked. Try again later.")
@@ -54,8 +54,9 @@ def run_scan(scan_id, source_type, payload, label=None):
 
 def _run_one(scan_id, scanner, root, work, steps):
     """Fail soft (§9 phase 3): a missing or broken scanner is noted in the report, never fatal."""
-    if not scanner.available():
-        _set(steps, scanner.name, "skipped", "not installed on this server")
+    skip = scanner.skip(root)  # not installed, turned off, or nothing for it to check (no Python files…)
+    if skip:
+        _set(steps, scanner.name, *skip)
         return []
     db.update_scan(scan_id, stage=scanner.label + "…", steps=_set(steps, scanner.name, "running"))
     try:
