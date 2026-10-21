@@ -899,6 +899,9 @@ def test_report_exports():
     import main
     r = TestClient(main.app).post("/scan", content=b"x", headers={"content-type": "multipart/form-data; boundary=b", "transfer-encoding": "chunked"})
     assert r.status_code == 411, r.status_code
+    # history: only the ids you send come back; there's no listing everyone's scans
+    client = TestClient(main.app)
+    assert client.get("/scans").json() == [] and client.get("/scans?ids=../../etc,x").json() == []
 
 
 def test_supabase_sql_reader():

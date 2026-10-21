@@ -13,12 +13,12 @@ export default function FindingRow({ finding: f, index }) {
   const sev = SEV[f.severity]
   const where = f.file ? `${f.file}${f.line ? `:${f.line}` : ''}` : ''
   return (
-    <li id={`f-${f.id}`} className="scroll-mt-6 animate-[rise_400ms_ease-out_both]" style={{ animationDelay: `${Math.min(index, 12) * 35}ms` }}>
-      <details className="group relative overflow-hidden rounded-lg border border-line bg-surface">
+    <li id={`f-${f.id}`} className="scroll-mt-32 animate-[rise_400ms_ease-out_both]" style={{ animationDelay: `${Math.min(index, 12) * 35}ms` }}>
+      <details className="group relative overflow-hidden rounded-xl border border-line bg-surface transition-colors open:border-line-strong">
         <span className={`absolute inset-y-0 left-0 w-[3px] ${f.is_false_positive ? 'bg-line' : sev.bg}`} aria-hidden />
-        <summary className="flex cursor-pointer list-none flex-col gap-1 py-3.5 pr-4 pl-5 hover:bg-raised sm:flex-row sm:items-baseline sm:gap-4 [&::-webkit-details-marker]:hidden">
-          <span className={`w-16 shrink-0 text-sm font-medium ${f.is_false_positive ? 'text-faint' : sev.text}`}>{f.severity}</span>
-          <span className="flex-1 font-medium">
+        <summary className="flex cursor-pointer list-none flex-col gap-1.5 py-4 pr-5 pl-6 hover:bg-raised/60 sm:flex-row sm:items-center sm:gap-4 [&::-webkit-details-marker]:hidden">
+          <span className={`w-[4.75rem] shrink-0 font-mono text-[11.5px] tracking-[0.08em] ${f.is_false_positive ? 'text-faint' : sev.text}`}>{f.severity.toUpperCase()}</span>
+          <span className="flex-1 text-[15.5px] font-medium">
             {f.title}
             {f.money_risk && !f.is_false_positive && (
               <span className="ml-2 inline-flex translate-y-[-1px] rounded bg-med/10 px-1.5 py-0.5 align-middle text-xs font-medium text-med" title="Could run up a bill or drain an API quota">
@@ -29,7 +29,7 @@ export default function FindingRow({ finding: f, index }) {
           {where && <span className="truncate font-mono text-[12.5px] text-faint">{where}</span>}
         </summary>
 
-        <div className="flex flex-col gap-5 border-t border-line px-5 py-5">
+        <div className="flex flex-col gap-5 border-t border-line px-6 py-6">
           {f.impact && <p className="text-[17px] leading-relaxed text-pretty">{f.impact}</p>}
 
           <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-sm">

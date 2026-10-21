@@ -74,6 +74,16 @@ async def create_scan(request: Request, background: BackgroundTasks):
     return {"scan_id": scan_id}
 
 
+@app.get("/scans")
+def scans(ids: str = ""):
+    """The browser's own scan history: ids in, short rows out. There's no list of everyone's scans: an id is the only key."""
+    wanted = [i for i in dict.fromkeys(ids.split(",")) if len(i) == 36][:20]
+    rows = db.scan_summaries(wanted) if wanted else []
+    for r in rows:
+        r["grade"] = scoring.grade(r["risk_score"]) if r["risk_score"] is not None else None
+    return sorted(rows, key=lambda r: r["created_at"], reverse=True)
+
+
 def _scan_or_404(scan_id):
     scan = db.get_scan(scan_id)
     if not scan:

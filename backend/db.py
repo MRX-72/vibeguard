@@ -106,6 +106,17 @@ def active_scans():
         return c.execute("SELECT COUNT(*) FROM scans WHERE status IN ('queued', 'running')").fetchone()[0]
 
 
+def scan_summaries(ids):
+    """Short rows for the scans whose ids the caller already holds (the browser keeps its own list)."""
+    marks = ", ".join("?" * len(ids))
+    with connect() as c:
+        rows = c.execute(
+            f"SELECT s.id, s.created_at, s.source_type, s.source_label, s.status, s.risk_score, "
+            f"(SELECT COUNT(*) FROM findings f WHERE f.scan_id = s.id AND f.is_false_positive = 0) AS findings "
+            f"FROM scans s WHERE s.id IN ({marks})", ids).fetchall()
+    return [dict(r) for r in rows]
+
+
 def get_scan(scan_id):
     with connect() as c:
         r = c.execute("SELECT * FROM scans WHERE id = ?", (scan_id,)).fetchone()
