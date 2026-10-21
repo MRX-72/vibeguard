@@ -1,0 +1,16 @@
+id: sql-string-concat
+language: tsx
+severity: error
+message: SQL query built by pasting values into the string
+rule:
+  kind: call_expression
+  all:
+    - has: {field: function, regex: '\.(query|execute|raw|unsafe|exec|prepare|\$queryRawUnsafe|\$executeRawUnsafe)$'}
+    - has:
+        field: arguments
+        has:
+          nthChild: 1
+          any:
+            - {kind: template_string, has: {kind: template_substitution}, regex: '(?i)\b(select|insert|update|delete)\b'}
+            - {kind: binary_expression, regex: '(?is)^["''`]\s*(select|insert|update|delete)\b.*\+'}
+metadata: {vibe: sql-string-concat, variant: pattern, confidence: Needs review}

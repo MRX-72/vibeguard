@@ -4,16 +4,13 @@ from pathlib import Path
 
 from models import Finding
 
-from .base import HYGIENE, Scanner, ScannerError, cwe_ids, humanize, lower, read_json, rel, snippet
+from . import custom_rules
+from .base import EXCLUDE, HYGIENE, Scanner, ScannerError, cwe_ids, humanize, lower, read_json, rel, snippet
 
 RULES = Path(__file__).resolve().parent.parent / "rules"
 REGISTRY = ["p/default", "p/owasp-top-ten"]  # fetched live unless rules/registry.json was downloaded
 SEV = {"CRITICAL": "Critical", "ERROR": "High", "HIGH": "High", "WARNING": "Medium", "MEDIUM": "Medium", "INFO": "Low", "LOW": "Low"}
-# Code that never ships to users. Secrets are still scanned there (gitleaks); static analysis isn't, which also
-# cuts semgrep's time on real repos by ~40%.
-EXCLUDE = ["*.test.*", "*.spec.*", "__tests__", "__mocks__", "test", "tests", "e2e", "cypress", "playwright", "docs",
-           "*.md", "*.lock", "package-lock.json", "*.min.js", "*.map", "dist", "build", ".next", "out", "coverage",
-           "storybook-static", "node_modules"]
+
 
 # Registry rules that are noise or hygiene for this audience, decided once here instead of on every report.
 POLICY = {
@@ -42,8 +39,9 @@ class Semgrep(Scanner):
     timeout = 240
 
     def configs(self):
+        # our taint rules ride along in the same run: one parse of the code instead of two (+1-2 CPU-s, not +3-5)
         cached = RULES / "registry.json"
-        return [str(cached)] if cached.exists() else REGISTRY
+        return ([str(cached)] if cached.exists() else REGISTRY) + [str(RULES / "vibe-coded.yml")]
 
     def run(self, root, work):
         out = work / "semgrep.json"
@@ -64,7 +62,8 @@ class Semgrep(Scanner):
         files = len(data.get("paths", {}).get("scanned", []))
         self.checked = f"{files:,} source file{'s' * (files != 1)}"
         uses_cookies = _uses_cookies(root)
-        return [self._finding(root, r, uses_cookies) for r in data.get("results", [])]
+        return [custom_rules.from_semgrep(root, r) if (r["extra"].get("metadata") or {}).get("vibe") else self._finding(root, r, uses_cookies)
+                for r in data.get("results", [])]
 
     def _finding(self, root, r, uses_cookies):
         rule, extra = r["check_id"], r["extra"]

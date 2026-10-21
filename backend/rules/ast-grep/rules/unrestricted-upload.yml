@@ -1,0 +1,8 @@
+id: unrestricted-upload
+language: tsx
+severity: warning
+message: File uploads accept any type and size
+rule:
+  pattern: multer($$$)
+  not: {has: {kind: pair, regex: ^(fileFilter|limits)\b, stopBy: end}}
+metadata: {vibe: unrestricted-upload, variant: any, confidence: Likely}

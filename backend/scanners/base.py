@@ -133,6 +133,12 @@ def from_cvss(score):
     return "Critical" if s >= 9 else "High" if s >= 7 else "Medium" if s >= 4 else "Low"
 
 
+# Code that never ships to users. Secrets are still scanned there (gitleaks); static analysis (semgrep, our rules) isn't,
+# which also cuts semgrep's time on real repos by ~40%.
+EXCLUDE = ["*.test.*", "*.spec.*", "__tests__", "__mocks__", "test", "tests", "e2e", "cypress", "playwright", "docs",
+           "*.md", "*.lock", "package-lock.json", "*.min.js", "*.map", "dist", "build", ".next", "out", "coverage",
+           "storybook-static", "node_modules"]
+
 HYGIENE = "Supply-chain hygiene for your build pipeline, not a vulnerability in your app."
 
 # --- secrets -----------------------------------------------------------------

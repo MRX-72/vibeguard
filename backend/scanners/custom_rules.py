@@ -1,0 +1,1057 @@
+"""VibeGuard's own rules (§7): the mistakes AI app builders make that generic scanners don't know about.
+
+Three engines, one catalog:
+- semgrep taint rules (rules/vibe-coded.yml) prove request/URL data reaches a sink -> "Confirmed reachable".
+  They ride along in the main semgrep run (a second run would cost 26-50 s on Render) and come back through from_semgrep().
+- ast-grep rules (rules/ast-grep/rules/*.yml) for structural patterns, run by VibeRules below.
+- Python checks for files that aren't JS/TS: env files, Supabase migrations, Firebase rules, plus cross-file checks.
+
+Every finding gets its words from CATALOG, so a rule's title, severity, fix and re-prompt are written once.
+"""
+
+import json
+import re
+from datetime import date
+from pathlib import Path
+
+from models import Finding
+
+from . import supabase_sql
+from .base import EXCLUDE, PLACEHOLDER, TEST_PATH, Scanner, classify_secret, read_json, rel, snippet
+
+RULES = Path(__file__).resolve().parent.parent / "rules"
+AST_GREP = RULES / "ast-grep" / "sgconfig.yml"
+JS = (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts")
+SKIP_DIRS = {"node_modules", ".git", "dist", "build", ".next", "out", "coverage", ".vercel", ".netlify", ".turbo"}
+
+# rule -> base text; VARIANTS override per variant. {name} placeholders are filled from the hit.
+CATALOG = {
+    "frontend-secret": dict(
+        severity="Critical", kind="secret", cwe=["CWE-200", "CWE-798"],
+        title="{noun} exposed in the browser",
+        impact="Anyone who opens your site can copy this key out of its JavaScript and use it. They don't need your code.",
+        reason="Code that runs in the browser is public: every visitor downloads it, so a key in it is published.",
+        fix="- {var}=…\n+ {server_var}=…   # no {prefix} prefix, so only server code can read it\n# and stop committing env files: add them to .gitignore",
+        reprompt="Move every call that uses the {noun} into server code (an API route or a Supabase Edge Function) and read the key "
+                 "there from an environment variable without a public prefix ({server_var}). The browser should call your route, never "
+                 "the provider directly. Then rotate the key: the old value has already been published.",
+        refs=["{doc}"],
+    ),
+    "supabase-rls-off": dict(
+        severity="Critical", kind="config", cwe=["CWE-862"],
+        title="Row-Level Security is off for {table}",
+        impact="Anyone on the internet can read, change or delete every row in {table}.",
+        reason="No login and no special key needed: the public anon key in your site's JavaScript is enough.",
+        explanation="Supabase serves every table in the public schema through its API, and the key needed to call it ships in your "
+                    "site's JavaScript. {table} has no Row-Level Security{disabled}, so anyone can read, change or delete every row "
+                    "with a few lines of code.",
+        fix="+ alter table {table} enable row level security;\n{policy_fix}",
+        reprompt="Write a new Supabase migration that enables Row-Level Security on {table} and adds policies so signed-in users "
+                 "can only read and change their own rows{owner_hint}. Put any admin-only access in policies that check an admin "
+                 "role stored in the database, never in React code.",
+        refs=["https://supabase.com/docs/guides/database/postgres/row-level-security"],
+    ),
+    "firebase-open-rules": dict(
+        severity="Critical", kind="config", cwe=["CWE-284"],
+        title="Firebase rules let anyone {ops} {scope}",
+        impact="Anyone on the internet can {ops_verb} {scope_data}.",
+        reason="Your Firebase config is in your site's JavaScript, so anyone can talk to the database directly, skipping your app.",
+        explanation="{file} allows {ops} on {path} {cond}. Firebase serves this {service} straight to browsers, and the config "
+                    "needed to reach it is public by design, so these rules are the only thing standing between strangers and your data.",
+        fix="- allow {raw_ops}: {raw_cond};\n+ allow {raw_ops}: if request.auth != null && request.auth.uid == userId;",
+        reprompt="Rewrite {file} so every rule checks who is asking: signed-in users may only read and write their own documents "
+                 "(request.auth.uid matches the document's owner), and nothing is open to everyone unless it's truly public content. "
+                 "Test the rules in the Firebase emulator before deploying.",
+        refs=["https://firebase.google.com/docs/rules/insecure-rules"],
+    ),
+    "client-only-auth": dict(
+        severity="High", kind="code", cwe=["CWE-602"],
+        title="Admin access decided in the browser",
+        impact="Any visitor can give themselves admin powers over whatever this check protects.",
+        reason="Checks in browser code can be skipped or edited by anyone with developer tools.",
+        reprompt="In {file}, stop relying on browser-side checks for admin access. Store roles in a Supabase table users can't "
+                 "edit, enforce them in Row-Level Security policies (or a server function), and keep the React check only to hide buttons.",
+        refs=["https://supabase.com/docs/guides/database/postgres/custom-claims-and-role-based-access-control-rbac"],
+    ),
+    "cors-wildcard": dict(
+        severity="High", kind="code", cwe=["CWE-346", "CWE-942"],
+        title="API trusts every website with your users' logins",
+        impact="Any website your users visit can make requests to your API as them and read the answers.",
+        reason="Allowing credentials for every origin turns any website into a client of your API, logged in as the visitor.",
+        explanation="{file}:{line} accepts any Origin and also allows credentials (cookies). So any website a signed-in user visits "
+                    "can call your API with their cookies and read the responses.",
+        fix="- origin: true,\n+ origin: [\"https://your-app.com\"],   // only your own site(s)",
+        reprompt="In {file}, replace the CORS setup with an explicit list of the origins that may call this API (your production "
+                 "and preview domains). Never echo the request's Origin while allowing credentials.",
+        refs=["https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/CORS#requests_with_credentials"],
+    ),
+    "xss-sink": dict(
+        severity="High", kind="code", cwe=["CWE-79"],
+        title="Text from the page URL is rendered as HTML",
+        impact="Anyone can send your users a link that runs their own code on your site, stealing sessions or acting as them.",
+        reason="It runs in your users' browsers with their session, and all it takes is a crafted link.",
+        explanation="{file}:{line} puts data from the URL or request into HTML without escaping it. Anyone can craft a link that "
+                    "makes your page run their JavaScript for whoever opens it.",
+        fix="{line_fix}",
+        reprompt="In {file}, render user-controlled text as plain JSX text (React escapes it) instead of with "
+                 "dangerouslySetInnerHTML or innerHTML. Where HTML is really needed, pass it through DOMPurify.sanitize() first.",
+        refs=["https://react.dev/reference/react-dom/components/common#dangerously-setting-the-inner-html",
+              "https://github.com/cure53/DOMPurify"],
+    ),
+    "sql-string-concat": dict(
+        severity="Critical", kind="code", cwe=["CWE-89"],
+        title="SQL query built from request data",
+        impact="Anyone can read, change or delete anything in your database, including other users' data and password hashes.",
+        reason="It's exploitable with one crafted request and exposes the whole database.",
+        explanation="{file}:{line} builds a SQL query by pasting request data into the query text. Anyone can send input that "
+                    "closes the string and adds their own SQL.",
+        fix="{line_fix}",
+        reprompt="In {file}, make every SQL query parameterized: keep the query text constant and pass values separately "
+                 "(db.query(\"... WHERE id = $1\", [id])). Never build SQL with + or template strings.",
+        refs=["https://node-postgres.com/features/queries#parameterized-query", "https://owasp.org/www-community/attacks/SQL_Injection"],
+    ),
+    "no-rate-limit": dict(
+        severity="Medium", kind="config", cwe=["CWE-770"],
+        title="No rate limit on login and sign-up endpoints",
+        impact="Attackers can try passwords and one-time codes as fast as your server answers.",
+        reason="Brute force needs no skill, only time, and nothing here slows it down.",
+        explanation="{method} {path} has no rate limit, and nothing else in the project limits requests.",
+        fix="+ import rateLimit from \"express-rate-limit\"\n+ const authLimit = rateLimit({ windowMs: 15 * 60 * 1000, limit: 10 })\n"
+            "- router.post(\"/login\", async (req, res) => {\n+ router.post(\"/login\", authLimit, async (req, res) => {",
+        reprompt="Add rate limiting to every login, sign-up, password-reset and one-time-code endpoint (for Express, "
+                 "express-rate-limit with about 10 attempts per 15 minutes per IP), and return 429 when it's exceeded.",
+        refs=["https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html#protect-against-automated-attacks"],
+    ),
+    "debug-in-prod": dict(
+        severity="Medium", kind="config", cwe=["CWE-489"],
+        title="Debug settings turned on in production config",
+        impact="Anyone who triggers an error sees stack traces and internal details that help them plan an attack.",
+        reason="It doesn't give access by itself, but it hands attackers a map of your app.",
+        explanation="{file} sets {setting_line}, which turns on debug output in production.",
+        fix="- {setting_line}\n+ {setting_off}",
+        reprompt="Turn off debug output in production: set debug flags to false in {file}, log errors on the server, and return "
+                 "only a generic message to users.",
+        refs=["https://cheatsheetseries.owasp.org/cheatsheets/Error_Handling_Cheat_Sheet.html"],
+    ),
+    "eval-user-input": dict(
+        severity="Critical", kind="code", cwe=["CWE-95"],
+        title="Request data is run as code",
+        impact="Anyone can run their own code on your server: read your keys and database, or take the server over.",
+        reason="One request is enough, and it gives full control of the server.",
+        explanation="{file}:{line} passes request data to {sink}, which runs it as JavaScript on your server. Anyone can send "
+                    "code instead of the input you expect.",
+        fix="{line_fix}",
+        reprompt="In {file}, never run request data as code. Parse the input into the exact shape you expect (for formulas, "
+                 "use a math parser like mathjs's evaluate(), which can't run code) and reject anything else.",
+        refs=["https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/eval#never_use_direct_eval!"],
+    ),
+    "unrestricted-upload": dict(
+        severity="Medium", kind="code", cwe=["CWE-434"],
+        title="File uploads accept any type and size",
+        impact="Anyone can fill your disk with huge files or upload files of any type.",
+        reason="Uploads with no limits are an easy way to take a server down or store anything on it.",
+        explanation="{file}:{line} accepts uploads with no fileFilter and no size limits.",
+        fix="- {line_text}\n+ const upload = multer({\n+   dest: \"uploads/\",   // outside public/\n"
+            "+   limits: { fileSize: 5 * 1024 * 1024 },\n+   fileFilter: (req, file, cb) => cb(null, [\"image/png\", \"image/jpeg\"].includes(file.mimetype)),\n+ })",
+        reprompt="In {file}, limit uploads: set a maximum file size, allow only the file types the feature needs (check the "
+                 "MIME type and extension), store them outside any publicly served folder, and give them random names.",
+        refs=["https://cheatsheetseries.owasp.org/cheatsheets/File_Upload_Cheat_Sheet.html"],
+    ),
+    "supabase-edge-service-role-no-auth": dict(
+        severity="High", kind="code", cwe=["CWE-306"],
+        title="Edge Function uses the service-role key without checking who's calling",
+        impact="Any visitor can trigger this function and make it read, change or delete data in your database with full admin rights.",
+        reason="Anyone who finds the function's URL gets admin access to your database.",
+        explanation="Supabase Edge Functions can be called by anyone with your project's anon key, and that key ships in your "
+                    "site's JavaScript. This function builds a client with the service-role key, which ignores Row-Level Security, "
+                    "and nothing in the file checks who the caller is: no auth.getUser(), no Authorization header check.",
+        fix="+ const auth = req.headers.get(\"Authorization\") ?? \"\"\n+ const { data: { user } } = await createClient(Deno.env.get(\"SUPABASE_URL\")!, "
+            "Deno.env.get(\"SUPABASE_ANON_KEY\")!, {\n+   global: { headers: { Authorization: auth } },\n+ }).auth.getUser()\n"
+            "+ if (!user) return new Response(\"Unauthorized\", { status: 401 })",
+        reprompt="In {file}, check the caller before using the service-role client: read the Authorization header, call "
+                 "supabase.auth.getUser() with it, return 401 if there's no user, and only read or change rows that belong to that user.",
+        refs=["https://supabase.com/docs/guides/functions/auth"],
+    ),
+    "supabase-getsession-on-server": dict(
+        severity="Medium", kind="code", cwe=["CWE-287"],
+        title="Server code trusts supabase.auth.getSession()",
+        impact="Someone can send a forged session and your server code treats them as a signed-in user.",
+        reason="An attacker needs a crafted request, and it only matters where the session decides access.",
+        explanation="On the server, getSession() reads the session from the request's cookies or storage without checking it with "
+                    "Supabase, so a tampered or expired token passes. Supabase's docs say never to trust it in server code; getUser() "
+                    "(or getClaims()) verifies the token.",
+        fix="- const { data: { session } } = await supabase.auth.getSession()\n+ const { data: { user } } = await supabase.auth.getUser()",
+        reprompt="In {file}, replace supabase.auth.getSession() with supabase.auth.getUser() for every server-side auth decision, "
+                 "and use the returned user (not session.user) to decide what the caller may do.",
+        refs=["https://supabase.com/docs/reference/javascript/auth-getsession"],
+    ),
+    "stripe-webhook-unsigned": dict(
+        severity="High", kind="code", cwe=["CWE-345"], money_risk=True,
+        title="Stripe webhook handled without checking Stripe's signature",
+        impact="Anyone can fake a successful payment and get paid features, credits or orders for free.",
+        reason="It's direct money loss, and webhook URLs are easy to guess.",
+        explanation="This code reacts to Stripe payment events, but nothing in the file verifies the Stripe-Signature header with "
+                    "stripe.webhooks.constructEvent(). Anyone can POST a fake \"payment succeeded\" event to it.",
+        fix="- const event = req.body\n+ const event = stripe.webhooks.constructEvent(\n+   rawBody, // the unparsed request body, e.g. from express.raw()\n"
+            "+   req.headers[\"stripe-signature\"],\n+   process.env.STRIPE_WEBHOOK_SECRET,\n+ )",
+        reprompt="In {file}, verify every Stripe webhook before trusting it: read the raw request body, call "
+                 "stripe.webhooks.constructEvent(rawBody, the stripe-signature header, STRIPE_WEBHOOK_SECRET from the environment), "
+                 "return 400 if it throws, and only then handle the event.",
+        refs=["https://docs.stripe.com/webhooks#verify-official-libraries"],
+    ),
+}
+
+POLICY_REPROMPT = ("In a new Supabase migration, drop policy \"{policy}\" on {table} and replace it with one that only matches the "
+                  "caller's own rows{owner_hint}, unless every row of this table is really meant to be open to {audience}.")
+
+VARIANTS = {
+    ("frontend-secret", "env-file"): dict(
+        explanation="{var} starts with {prefix}, so {framework} copies its value into the JavaScript every visitor downloads. "
+                    "{what_cap} is meant to stay on a server."),
+    ("frontend-secret", "code-env"): dict(
+        kind="code", title="{noun} read in browser code",
+        explanation="{file} reads {var}. Because of the {prefix} prefix, the build replaces it with the actual value, so the key "
+                    "ends up in the JavaScript every visitor downloads.",
+        fix="- {line_text}\n+ // call your own API route or Edge Function here; it reads {server_var} on the server"),
+    ("frontend-secret", "browser-sdk"): dict(
+        kind="code", title="AI SDK set to run in the browser", money_risk=True,
+        impact="Anyone can copy the key from your site and run up your AI bill or drain its quota.",
+        explanation="dangerouslyAllowBrowser: true makes the SDK run in visitors' browsers, so whatever API key it uses is sent to "
+                    "every visitor. The option's name is the SDK's own warning.",
+        fix="- const openai = new OpenAI({ apiKey, dangerouslyAllowBrowser: true })\n+ // in a server route or Edge Function:\n"
+            "+ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })",
+        evidence=["Line {flag_line}: dangerouslyAllowBrowser: true makes the SDK run in the browser"]),
+    ("frontend-secret", "literal"): dict(
+        title="{noun} hardcoded in browser code",
+        explanation="{file} runs in visitors' browsers, so this key is part of the JavaScript every visitor downloads, not just "
+                    "your repository. Rotate it{rotate_at}, then move the call to the server.",
+        fix="- {line_text}\n+ // the browser calls your API route; the route reads {server_var} from the environment"),
+    ("supabase-rls-off", "open-write"): dict(
+        title="Anyone can {verbs} every row in {table}",
+        impact="Anyone on the internet can {verbs} any row in {table}.",
+        explanation="Policy \"{policy}\" ({file}:{line}) lets {audience} {cmd_text} with a condition of true, so it doesn't limit "
+                    "anything. Policies add up, so one open policy opens the table.",
+        fix="- create policy \"{policy}\" on {table} for {cmd} using (true);\n{policy_fix}", reprompt=POLICY_REPROMPT),
+    ("supabase-rls-off", "signed-in-write"): dict(
+        severity="High", title="Any signed-in user can {verbs} every row in {table}",
+        impact="If anyone can sign up for your app, anyone can {verbs} every row in {table}.",
+        reason="Signing up is usually open, so \"signed in\" means \"anyone with an email address\".",
+        explanation="Policy \"{policy}\" ({file}:{line}) only checks that the caller is signed in. If only invited staff can sign "
+                    "in to this project, that may be intended; otherwise every user can {verbs} everyone's rows.",
+        fix="- create policy \"{policy}\" on {table} for {cmd} to authenticated using (true);\n{policy_fix}", reprompt=POLICY_REPROMPT),
+    ("supabase-rls-off", "open-read"): dict(
+        severity="High", title="Anyone can read every row in {table}",
+        impact="Anyone on the internet can read every row in {table}.",
+        reason="If this table holds personal data, it's a data leak; the table's name suggests it might.",
+        explanation="Policy \"{policy}\" ({file}:{line}) lets anyone, without signing in, read every row in {table}. That's right for "
+                    "public content like published posts, and wrong for personal data.",
+        fix="- create policy \"{policy}\" on {table} for select using (true);\n{policy_fix}", reprompt=POLICY_REPROMPT),
+    ("supabase-rls-off", "signed-in-read"): dict(
+        severity="Medium", title="Any signed-in user can read every row in {table}",
+        impact="If anyone can sign up for your app, anyone can read every row in {table}.",
+        reason="Signing up is usually open, and the table's name suggests personal data.",
+        explanation="Policy \"{policy}\" ({file}:{line}) lets every signed-in user read every row in {table}, not just their own.",
+        fix="- create policy \"{policy}\" on {table} for select to authenticated using (true);\n{policy_fix}", reprompt=POLICY_REPROMPT),
+    ("supabase-rls-off", "open-insert"): dict(
+        severity="Medium", title="Anyone can add rows to {table}",
+        impact="Anyone can add rows to {table}, including rows that claim to belong to someone else.",
+        reason="Fine for public forms like a waitlist; risky when rows carry an owner.",
+        explanation="Policy \"{policy}\" ({file}:{line}) lets {audience} insert any row into {table}. If rows belong to users, "
+                    "check the new row's owner is the caller.",
+        fix="- with check (true)\n+ with check ((select auth.uid()) = {owner_or_user_id})", reprompt=POLICY_REPROMPT),
+    ("supabase-rls-off", "view"): dict(
+        severity="High", title="View {table} skips Row-Level Security",
+        impact="Anyone can read, through {table}, rows that Row-Level Security hides on the underlying tables.",
+        reason="Supabase's own security advisor treats this as an error.",
+        explanation="Postgres views run with their creator's rights unless they're created with security_invoker, so {table} "
+                    "returns rows from the tables it reads even where Row-Level Security would hide them. Supabase serves it to "
+                    "browsers like any table.",
+        fix="- create view {table} as\n+ create view {table} with (security_invoker = true) as",
+        reprompt="In a new Supabase migration, recreate the view {table} with (security_invoker = true) so it respects the "
+                 "Row-Level Security of the tables it reads.",
+        refs=["https://supabase.com/docs/guides/database/database-linter?lint=0010_security_definer_view"]),
+    ("firebase-open-rules", "test-mode"): dict(
+        title="Firebase test-mode rules: open to everyone until {until}",
+        explanation="{file} uses Firebase's test-mode rule, which allows {ops} on {path} for anyone until {until}. Firebase serves "
+                    "this {service} straight to browsers, and the config needed to reach it is public by design."),
+    ("firebase-open-rules", "signed-in-all"): dict(
+        severity="High", title="Any signed-in user can {ops} all your Firebase data",
+        impact="Anyone who signs up can {ops_verb} every user's data.",
+        reason="Signing up is open, so \"signed in\" means \"anyone with an email address\".",
+        explanation="{file} allows {ops} on {path} for any signed-in user. It doesn't check that the data belongs to them."),
+    ("firebase-open-rules", "signed-in-other"): dict(
+        severity="High", title="Any signed-in user can {ops} other users' {collection}",
+        impact="Any signed-in user can {ops_verb} other users' {collection}.",
+        reason="Signing up is open, and the rule never checks the owner.",
+        explanation="{file} allows {ops} on {path} for any signed-in user, but never compares {{{var}}} with request.auth.uid, "
+                    "so one user can reach everyone else's documents.",
+        fix="- allow {raw_ops}: {raw_cond};\n+ allow {raw_ops}: if request.auth != null && request.auth.uid == {var};"),
+    ("firebase-open-rules", "open-read"): dict(
+        severity="High", title="Anyone can read {collection} in Firebase",
+        impact="Anyone on the internet can read every document in {collection}.",
+        reason="Fine for public content; the collection's name suggests personal data."),
+    ("client-only-auth", "storage-flag"): dict(
+        explanation="{file} reads {key} from {storage} to decide access. Anyone can open their browser's developer tools and "
+                    "set it to whatever they like.",
+        fix="- {line_text}\n+ const { data: isAdmin } = await supabase.rpc(\"is_admin\")   // decided by the database, not the browser"),
+    ("client-only-auth", "guarded-mutation"): dict(
+        title="Admin-only {cmd} on {table} is checked only in the browser",
+        impact="Anyone can {cmd} rows in {table} by sending the request themselves, skipping your admin check.",
+        explanation="{file} only runs this {cmd} when the user looks like an admin, but that check happens in the browser. The "
+                    "request goes straight to Supabase, so anyone can send it without the check. {server_note}",
+        fix="+ create policy \"Only admins can {cmd}\" on public.{table} for {cmd} to authenticated\n"
+            "+   using (exists (select 1 from public.profiles p where p.id = (select auth.uid()) and p.is_admin));"),
+    ("cors-wildcard", "wildcard"): dict(
+        severity="Low", kind="config", title="API allows requests from any website",
+        impact="Today, little: any site can read what this API returns to anyone. It matters once you add cookie-based logins.",
+        reason="Without cookie logins, a wildcard only exposes what's already public.",
+        explanation="{file}:{line} sets Access-Control-Allow-Origin to *. That's fine for public data. If you add cookie-based "
+                    "login later, browsers block it, and the usual \"fix\" (echoing the caller's origin with credentials) lets "
+                    "any website act as your users.",
+        fix="- app.use(cors())\n+ app.use(cors({ origin: [\"https://your-app.com\"] }))"),
+    ("xss-sink", "pattern"): dict(
+        title="HTML rendered from data without sanitizing",
+        impact="If this value can contain anything a user wrote, they can run their code in everyone else's browser.",
+        reason="Stored scripts run for every viewer, with their session.",
+        explanation="{file}:{line} renders {value} as raw HTML. If it can contain anything a user wrote (a comment, a profile "
+                    "field, a message), they can put a script in it that runs for everyone who views it."),
+    ("sql-string-concat", "pattern"): dict(
+        title="SQL query built by pasting values into the string",
+        explanation="{file}:{line} builds SQL by pasting values into the query text. If any of them can come from a user, they "
+                    "can rewrite the query. Even when they can't today, parameters are the safe default."),
+    ("sql-string-concat", "postgrest"): dict(
+        title="Supabase filter built from request data", cwe=["CWE-943"],
+        impact="Anyone can add their own conditions to this query and read rows they shouldn't see.",
+        explanation="{file}:{line} builds a PostgREST filter string with request data. The caller can add their own filters "
+                    "(commas and dots are filter syntax) and read rows the query was meant to hide.",
+        fix="- .or(`email.eq.${q},name.eq.${q}`)\n+ .or(`email.eq.${JSON.stringify(q)},name.eq.${JSON.stringify(q)}`)   // or use .eq()/.ilike() per column"),
+    ("eval-user-input", "command"): dict(
+        title="Request data is run as a shell command", cwe=["CWE-78"],
+        explanation="{file}:{line} passes request data to {sink}, which runs it through a shell. Anyone can add their own commands "
+                    "with ; or &&.",
+        fix="- exec(`convert ${input} out.png`)\n+ execFile(\"convert\", [input, \"out.png\"])   // no shell, arguments stay arguments",
+        reprompt="In {file}, never pass request data to a shell. Use execFile/spawn with an argument array (no shell: true) and "
+                 "validate each argument against an allow-list."),
+    ("no-rate-limit", "ai"): dict(
+        title="No rate limit on endpoints that call paid AI APIs", money_risk=True,
+        impact="Anyone can call these endpoints in a loop and run up your AI bill or burn your credits.",
+        reason="Each call costs you money, and nothing stops a script from calling them thousands of times.",
+        explanation="{method} {path} calls a paid AI API, and nothing limits how often it can be called.",
+        fix="+ // before calling the AI API: allow each user a few calls per minute\n+ const { success } = await ratelimit.limit(userId)   // e.g. @upstash/ratelimit\n"
+            "+ if (!success) return new Response(\"Too many requests\", { status: 429 })",
+        reprompt="Add a per-user rate limit (for example a few requests per minute, using @upstash/ratelimit or a counter "
+                 "table) to every endpoint that calls a paid AI API, and return 429 when it's exceeded. Require sign-in for them too."),
+    ("debug-in-prod", "stack"): dict(
+        kind="code", title="Error responses include stack traces", cwe=["CWE-209"],
+        explanation="{file}:{line} sends the error's stack trace to whoever made the request. It reveals file paths, library "
+                    "versions and code structure.",
+        fix="- {line_text}\n+ console.error(err)\n+ res.status(500).json({ error: \"Something went wrong\" })",
+        reprompt="In {file}, log errors on the server and send users only a generic message. Never put err.stack (or raw error "
+                 "details) in a response."),
+    ("unrestricted-upload", "public"): dict(
+        severity="High", title="Uploads of any type are saved into a public folder",
+        impact="Anyone can upload an .html or .svg file that then runs as a page on your own domain, with your users' sessions.",
+        reason="An uploaded page on your own domain is stored XSS that every visitor trusts.",
+        explanation="{file}:{line} accepts any file type and size, and saves uploads in {dest}, which your site serves as-is."),
+}
+
+# what an env var name is, for titles ("OpenAI API key exposed in the browser")
+NOUNS = [(r"SERVICE_ROLE", "Supabase service_role key"), (r"SUPABASE_SECRET", "Supabase secret key"), (r"OPENAI", "OpenAI API key"),
+         (r"ANTHROPIC|CLAUDE", "Anthropic API key"), (r"GROQ", "Groq API key"), (r"GEMINI", "Gemini API key"),
+         (r"OPENROUTER", "OpenRouter API key"), (r"MISTRAL", "Mistral API key"), (r"STRIPE", "Stripe secret key"),
+         (r"RESEND", "Resend API key"), (r"SENDGRID", "SendGrid API key"), (r"TWILIO", "Twilio credentials"),
+         (r"ELEVENLABS", "ElevenLabs API key"), (r"REPLICATE", "Replicate API token"), (r"DATABASE_URL|DB_URL", "Database password")]
+PUBLIC_PREFIX = re.compile(r"^(VITE_|NEXT_PUBLIC_|REACT_APP_|EXPO_PUBLIC_|NUXT_PUBLIC_|GATSBY_|VUE_APP_|PUBLIC_)")
+SECRETS_DOC = "https://cheatsheetseries.owasp.org/cheatsheets/Secrets_Management_Cheat_Sheet.html"
+ENV_DOCS = {"VITE_": "https://vite.dev/guide/env-and-mode", "NEXT_PUBLIC_": "https://nextjs.org/docs/app/guides/environment-variables",
+            "REACT_APP_": "https://create-react-app.dev/docs/adding-custom-environment-variables/",
+            "EXPO_PUBLIC_": "https://docs.expo.dev/guides/environment-variables/"}
+FRAMEWORK = {"VITE_": "Vite", "NEXT_PUBLIC_": "Next.js", "REACT_APP_": "Create React App", "EXPO_PUBLIC_": "Expo",
+             "NUXT_PUBLIC_": "Nuxt", "GATSBY_": "Gatsby", "VUE_APP_": "Vue CLI", "PUBLIC_": "SvelteKit and Astro"}
+SECRET_NAME = re.compile(r"SECRET|SERVICE_ROLE|PRIVATE|PASSWORD|OPENAI|ANTHROPIC|CLAUDE|GROQ|GEMINI|MISTRAL|COHERE|REPLICATE|"
+                         r"ELEVENLABS|DEEPSEEK|PERPLEXITY|OPENROUTER|TOGETHER|HUGGING|HF_TOKEN|RESEND|SENDGRID|TWILIO|DATABASE_URL|DB_URL|ADMIN_(KEY|TOKEN)")
+PUBLIC_NAME = re.compile(r"PUBLISHABLE|ANON|PUBLIC_KEY|SITE_KEY|_ID$")
+SENSITIVE = re.compile(r"(?i)user|profile|account|member|customer|client|patient|employee|payment|invoice|order|subscription|"
+                       r"billing|transaction|message|chat|conversation|comment|note|journal|entr(y|ies)|diary|document|upload|"
+                       r"address|contact|phone|email|secret|token|credential|session|health|medical|private|personal")
+OWNER = re.compile(r"\b(user_id|owner_id|profile_id|author_id|created_by|account_id)\b")
+
+
+def _fill(text, v):
+    for k, val in v.items():
+        text = text.replace("{" + k + "}", str(val))
+    return text
+
+
+def build(rule, variant, root, file, line, end=None, confidence=None, secret=None, group="", **v):
+    """A Finding for `rule`/`variant` at file:line, with every text field taken from the catalog and filled in from `v`.
+    `group` splits findings the report would otherwise merge (one card per table, not one per migration file)."""
+    spec = CATALOG[rule] | VARIANTS.get((rule, variant), {})
+    quiet = spec["kind"] == "secret" or ENV_FILE.search(file)  # neighbouring env lines are often secrets
+    code, start = snippet(root, file, line, end or line, context=0 if quiet else 2)
+    lines = code.splitlines()
+    v = {"file": file, "line": line, "line_text": lines[line - start].strip() if 0 <= line - start < len(lines) else ""} | v
+    text = {k: _fill(spec.get(k, ""), v) for k in ("title", "impact", "reason", "explanation", "fix", "reprompt")}
+    f = Finding(
+        source="vibeguard", raw_rule_id=f"vibe.{rule}" + (f":{variant}" if variant else "") + (f"@{group}" if group else ""), kind=spec["kind"],
+        severity=spec["severity"], confidence=confidence or "Likely", title=text["title"], impact=text["impact"],
+        severity_reason=text["reason"], explanation=text["explanation"], fix_diff=text["fix"], reprompt=text["reprompt"],
+        file=file, line=line, end_line=end or line, code_snippet=code, snippet_start=start, cwe=spec["cwe"],
+        money_risk=bool(spec.get("money_risk") or v.get("money_risk")),
+        refs=[_fill(r, v) for r in spec.get("refs", []) if _fill(r, v) != r or "{" not in r] + ([v["rotate"]] if v.get("rotate") else []),
+        evidence=[_fill(e, v) for e in spec.get("evidence", [])] + list(v.get("extra_evidence", [])),
+    )
+    f._secret = secret
+    return f
+
+
+class VibeRules(Scanner):
+    """Step 4 of the pipeline (§3): our own rules. Python checks always run; ast-grep rules run when it's installed."""
+
+    name = "vibeguard"
+    label = "VibeGuard rules"
+    binary = "ast-grep"
+    timeout = 90
+
+    def available(self):
+        return True  # the Python checks need nothing installed
+
+    def run(self, root, work):
+        files = _files(root)
+        texts = _Texts(root)
+        tables = _migrations(root, files, texts)
+        findings = (_env_files(root, files, texts) + _client_literals(root, files, texts) + _rls(root, tables)
+                    + _firebase(root, files, texts) + _rate_limits(root, files, texts) + _template_html(root, files, texts))
+        structural = super().available()
+        if structural and any(f.endswith(JS) for f in files):
+            findings += self._ast_grep(root, work, tables)
+        self.checked = f"{len(files):,} file{'s' * (len(files) != 1)}" + ("" if structural else " (structural rules skipped: ast-grep isn't installed)")
+        return findings
+
+    def _ast_grep(self, root, work, tables):
+        args = [self.binary, "scan", "--config", str(AST_GREP), "--json=compact", "--include-metadata"]
+        for pattern in EXCLUDE:  # the same "doesn't ship" exclusions as semgrep
+            args += ["--globs", f"!**/{pattern}"]
+        r = self.exec(args + [str(root)], ok=(0, 1))  # exit 1 = a rule with severity "error" matched
+        out = work / "ast-grep.json"
+        out.write_text(r.stdout)
+        found = []
+        for m in read_json(out, []):
+            meta = m.get("metadata") or {}
+            if "vibe" not in meta:
+                continue
+            file = rel(root, m["file"])
+            line, end = m["range"]["start"]["line"] + 1, m["range"]["end"]["line"] + 1
+            mv = {k: x["text"] for k, x in (m.get("metaVariables") or {}).get("single", {}).items()}
+            f = _from_ast(root, meta, file, line, end, mv, tables)
+            if f:
+                found.append(f)
+        return found
+
+
+def _from_ast(root, meta, file, line, end, mv, tables):
+    rule, variant, conf = meta["vibe"], meta.get("variant", ""), meta.get("confidence", "Likely")
+    v = {}
+    if rule == "frontend-secret" and variant == "code-env":
+        var = mv.get("VAR", "")
+        prefix = PUBLIC_PREFIX.match(var)[0] if PUBLIC_PREFIX.match(var) else ""
+        v = {"var": var, "prefix": prefix, "noun": _noun(var), "server_var": var[len(prefix):], "doc": ENV_DOCS.get(prefix, SECRETS_DOC)}
+    elif rule == "frontend-secret" and variant == "browser-sdk":
+        text = _read(root, file).splitlines()
+        flag = next((i for i in range(line, end + 1) if "dangerouslyAllowBrowser" in text[i - 1]), line)
+        v = {"flag_line": flag, "noun": "AI API key", "server_var": "OPENAI_API_KEY", "doc": SECRETS_DOC}
+    elif rule == "client-only-auth" and variant == "storage-flag":
+        v = {"key": mv.get("KEY", ""), "storage": mv.get("STORE", "localStorage").replace("window.", "")}
+    elif rule == "client-only-auth" and variant == "guarded-mutation":
+        table = mv.get("TABLE", "").strip("'\"`")
+        v = {"table": table, "cmd": mv.get("WRITE", "change")}
+        verdict = _server_guard(tables, table, v["cmd"])
+        if verdict is False:
+            return None  # RLS on, with no policy that opens this command: the server enforces it, the React check is just UI
+        conf, v["server_note"] = verdict or (conf, f"Whether the server stops it depends on {table}'s Row-Level Security policies, which aren't in this code.")
+        if verdict:
+            v["extra_evidence"] = [v["server_note"]]
+    elif rule == "xss-sink":
+        v = {"value": _value(root, file, line), "line_fix": _xss_fix(root, file, line)}
+    elif rule == "sql-string-concat":
+        v = {"line_fix": _sql_fix(root, file, line)}
+    elif rule == "unrestricted-upload":
+        dest = re.search(r"""(?:dest|destination)\s*:\s*["'`]([^"'`]+)""", "\n".join(_read(root, file).splitlines()[line - 1 : end]))
+        v = {"dest": dest[1] if dest else "a public folder"}
+    return build(rule, variant, root, file, line, end if rule not in ("xss-sink", "sql-string-concat", "debug-in-prod") else line,
+                 conf, **v)
+
+
+def from_semgrep(root, r):
+    """A finding from one of our taint rules (rules/vibe-coded.yml), which ran inside the main semgrep scan."""
+    meta = r["extra"].get("metadata") or {}
+    rule, variant = meta["vibe"], meta.get("variant", "")
+    file, line = rel(root, r["path"]), r["start"]["line"]
+    text = _read(root, file).splitlines()
+    sink = text[line - 1] if 0 < line <= len(text) else ""
+    v = {}
+    if rule == "sql-string-concat":
+        variant = "postgrest" if ".or(" in sink else variant
+        v = {"line_fix": _sql_fix(root, file, line)}
+    elif rule == "xss-sink":
+        v = {"line_fix": _xss_fix(root, file, line)}
+    elif rule == "eval-user-input":
+        called = re.search(r"\b(eval|Function|setTimeout|setInterval|runIn\w+Context|Script|execSync|exec|spawn)\s*\(", sink)
+        v = {"sink": f"{called[1]}()" if called else "a function that runs code", "line_fix": _eval_fix(sink)}
+    f = build(rule, variant, root, file, line, None, "Confirmed reachable", **v)
+    f.evidence = ["Request or URL data flows into this line in the same function (taint analysis)."] + f.evidence
+    return f
+
+
+# --- helpers ------------------------------------------------------------------
+
+class _Texts(dict):
+    """File contents, read once per scan."""
+
+    def __init__(self, root):
+        super().__init__()
+        self.root = root
+
+    def __missing__(self, file):
+        self[file] = _read(self.root, file)
+        return self[file]
+
+
+def _read(root, file):
+    try:
+        return (root / file).read_text(errors="replace")
+    except OSError:
+        return ""
+
+
+def _files(root):
+    out = []
+    for p in sorted(root.rglob("*")):
+        if p.is_file() and not SKIP_DIRS.intersection(p.relative_to(root).parts[:-1]) and p.stat().st_size < 1_000_000:
+            out.append(p.relative_to(root).as_posix())
+    return out
+
+
+def _noun(var):
+    return next((noun for pattern, noun in NOUNS if re.search(pattern, var)), var)
+
+
+def _html_value(src):
+    """(start, end) of the expression after `__html:` in a line, honouring strings, template literals and nesting."""
+    m = re.search(r"__html\s*:\s*", src)
+    if not m:
+        return None
+    i, stack = m.end(), []  # open brackets, quotes, "`" for a template literal and "${" inside one
+    while i < len(src):
+        c, top = src[i], stack[-1] if stack else None
+        if top in ("'", '"', "`"):
+            if c == "\\":
+                i += 2
+                continue
+            if c == top:
+                stack.pop()
+            elif top == "`" and src.startswith("${", i):
+                stack.append("${")
+                i += 2
+                continue
+        elif c in "'\"`([{":
+            stack.append(c)
+        elif c in ")]}":
+            if not stack:
+                break
+            stack.pop()
+        elif c == "," and not stack:
+            break
+        i += 1
+    return m.end(), len(src[:i].rstrip())
+
+
+def _value(root, file, line):
+    src = _read(root, file).splitlines()[line - 1] if line else ""
+    span = _html_value(src)
+    return src[span[0] : span[1]].strip() if span else "this value"
+
+
+def _xss_fix(root, file, line):
+    text = _read(root, file).splitlines()
+    src = text[line - 1].strip() if 0 < line <= len(text) else ""
+    span = _html_value(src)
+    if not span:
+        return "- el.innerHTML = value\n+ el.textContent = value   // or DOMPurify.sanitize(value) if it must be HTML"
+    value = src[span[0] : span[1]].strip()
+    element = re.match(r"(.*?)<(\w+)\s+dangerouslySetInnerHTML=\{\{\s*__html\s*:\s*`([^`]*)`\s*\}\}\s*/>(.*)$", src)
+    if element:  # a template on a self-closing element: plain JSX children, which React escapes
+        before, tag, template, after = element.groups()
+        children = re.sub(r"\$\{([^}]*)\}", r"{\1}", template)
+        return f"- {src}\n+ {before}<{tag}>{children}</{tag}>{after}   // React escapes {{…}} in JSX"
+    return f"- {src}\n+ {src[: span[0]]}DOMPurify.sanitize({value}){src[span[1]:]}"
+
+
+def _eval_fix(sink):
+    sink = sink.strip()
+    if "eval(" in sink:
+        return f"- {sink}\n+ {sink.replace('eval(', 'evaluate(')}   // mathjs evaluate(): math only, it can't run code"
+    return f"- {sink}\n+ // parse the input into the shape you expect; never run it"
+
+
+def _sql_fix(root, file, line):
+    text = _read(root, file).splitlines()
+    src = text[line - 1].strip() if 0 < line <= len(text) else ""
+    fixed = parameterize(src, "?" if re.search(r"\bmysql2?\b", "\n".join(text)) else "$")
+    return f"- {src}\n+ {fixed}" if fixed else f"- {src}\n+ // keep the SQL text constant and pass values separately: db.query(\"... WHERE id = $1\", [id])"
+
+
+def parameterize(line, style="$"):
+    """`db.query("... = '" + email + "'")` -> `db.query("... = $1", [email])`. None when the call isn't a simple one-liner."""
+    m = re.search(r"\.(query|execute|raw|unsafe|exec|prepare|\$queryRawUnsafe|\$executeRawUnsafe)\(", line)
+    if not m:
+        return None
+    start = i = m.end()
+    depth, quote = 0, None
+    while i < len(line):
+        c = line[i]
+        if quote:
+            quote = None if c == quote and line[i - 1] != "\\" else quote
+        elif c in "\"'`":
+            quote = c
+        elif c in "([{":
+            depth += 1
+        elif c in ")]}":
+            if depth == 0:
+                break
+            depth -= 1
+        elif c == "," and depth == 0:
+            break
+        i += 1
+    arg, rest = line[start:i].strip(), line[i:]
+    if arg.startswith("`") and arg.endswith("`"):
+        pieces = re.split(r"\$\{([^}]*)\}", arg[1:-1])  # text, expr, text, expr, …, text
+    else:
+        tokens = _split_plus(arg)
+        if not tokens:
+            return None
+        pieces = [""]  # same alternation; odd length means the last piece is text
+        for tok in tokens:
+            literal = len(tok) >= 2 and tok[0] in "\"'" and tok[-1] == tok[0]
+            if literal and len(pieces) % 2:
+                pieces[-1] += tok[1:-1]
+            elif literal:
+                pieces.append(tok[1:-1])
+            else:
+                if len(pieces) % 2 == 0:
+                    pieces.append("")
+                pieces.append(tok)
+    texts, exprs = pieces[0::2], [e.strip() for e in pieces[1::2]]
+    if not exprs or not all(exprs):
+        return None
+    sql = texts[0]
+    for n in range(1, len(exprs) + 1):
+        text = texts[n] if n < len(texts) else ""
+        if sql.endswith("'") and text.startswith("'"):  # '${x}' -> $1: the driver handles quoting
+            sql, text = sql[:-1], text[1:]
+        sql += (f"${n}" if style == "$" else "?") + text
+    if '"' in sql:
+        return None
+    return f'{line[: m.end()]}"{sql}", [{", ".join(exprs)}]{rest}'
+
+
+def _split_plus(expr):
+    """Split `"a" + b + "c"` on top-level +; None if there's something we don't parse."""
+    out, buf, depth, quote = [], "", 0, None
+    for i, c in enumerate(expr):
+        if quote:
+            buf += c
+            if c == quote and expr[i - 1] != "\\":
+                quote = None
+        elif c in "\"'`":
+            quote = c
+            buf += c
+        elif c in "([{":
+            depth += 1
+            buf += c
+        elif c in ")]}":
+            depth -= 1
+            buf += c
+        elif c == "+" and depth == 0:
+            out.append(buf.strip())
+            buf = ""
+        else:
+            buf += c
+    out.append(buf.strip())
+    return out if len(out) > 1 and all(out) and not any(t.startswith("`") for t in out) else None
+
+
+# --- env files: secrets with a public prefix, debug flags in production ----------------------------------
+
+ENV_FILE = re.compile(r"(^|/)\.env(\.[\w.-]+)?$")
+ENV_EXAMPLE = re.compile(r"(?i)example|sample|template|dist|defaults?$")
+PROD_ENV = re.compile(r"(^|/)\.env\.(production|prod|live)(\.local)?$")
+DEBUG_ON = re.compile(r"^\s*(DEBUG|APP_DEBUG|FLASK_DEBUG|DJANGO_DEBUG|\w*_DEBUG|\w*STACK_?TRACES?\w*|VERBOSE_ERRORS|DISPLAY_ERRORS)\s*=\s*"
+                      r"[\"']?(true|1|yes|on|\*)[\"']?\s*$|^\s*NODE_ENV\s*=\s*[\"']?development[\"']?\s*$", re.I)
+
+
+def _env_files(root, files, texts):
+    out = []
+    for file in files:
+        if not ENV_FILE.search(file) or ENV_EXAMPLE.search(file):
+            continue
+        prod = bool(PROD_ENV.search(file))
+        for n, raw in enumerate(texts[file].splitlines(), 1):
+            m = re.match(r"^\s*(?:export\s+)?([A-Z][A-Z0-9_]*)\s*=\s*(.*?)\s*$", raw)
+            if not m:
+                continue
+            name, value = m[1], m[2].strip("'\"")
+            if prod and DEBUG_ON.match(raw):
+                off = re.sub(r"=.*", "=" + ("production" if name == "NODE_ENV" else "false"), raw.strip())
+                out.append(build("debug-in-prod", "env", root, file, n, setting=name, setting_line=raw.strip(), setting_off=off))
+            prefix = PUBLIC_PREFIX.match(name)
+            if not prefix or PUBLIC_NAME.search(name) or len(value) < 8 or PLACEHOLDER.match(value):
+                continue
+            info = classify_secret(value, file, "")
+            known = not info["false_positive"] and info["severity"] in ("Critical", "High") and (info["rotate"] or info["env_var"] != "API_KEY")
+            if known or (SECRET_NAME.search(name) and not info["false_positive"]):
+                noun = _noun(name) if _noun(name) != name else re.sub(r"^(Exposed |Hardcoded )|( exposed)$", "", info["title"])
+                what = info["what"] if info["what"] != "this secret" else f"the value of {name}"
+                out.append(build("frontend-secret", "env-file", root, file, n, secret=value, var=name, prefix=prefix[0],
+                                 framework=FRAMEWORK[prefix[0]], noun=noun, doc=ENV_DOCS.get(prefix[0], SECRETS_DOC), what_cap=what[:1].upper() + what[1:],
+                                 server_var=name[len(prefix[0]):], money_risk=info["money_risk"], rotate=info["rotate"]))
+    return out
+
+
+# --- hardcoded keys in code that ships to browsers ---------------------------------------------------------
+
+KEY_LITERAL = re.compile(r"""(["'`])((?:sk-|sk_live_|rk_live_|gsk_|sk-ant-|sk-or-|sb_secret_|sbp_|AKIA|xox[bp]-|SG\.|ghp_|github_pat_|eyJ)[A-Za-z0-9_\-.=]{16,})\1""")
+SERVER_PATH = re.compile(r"(^|/)(server|api|backend|functions|scripts|edge|workers?|cron|jobs|migrations|seeds?)/|\.server\.|"
+                         r"(^|/)(middleware|route)\.[mc]?[jt]sx?$|\.config\.[mc]?[jt]s$")
+
+
+def is_browser_code(file, text, next_app):
+    """Code that ends up in the browser bundle: React/Vue components and modules under src/, Next.js client components."""
+    if not file.endswith(JS + (".vue", ".svelte", ".html")) or SERVER_PATH.search(file) or TEST_PATH.search(file):
+        return False
+    head = text[:300]
+    if re.search(r"""^\s*["']use client["']""", head, re.M):
+        return True
+    if re.search(r"""^\s*["']use server["']""", head, re.M) or "createServerFn" in text:
+        return False
+    if next_app:  # app/ files are server components unless marked "use client"; pages/ (non-API) ship to the browser
+        return bool(re.match(r"(src/)?pages/", file))
+    return file.startswith(("src/", "client/", "frontend/", "web/", "public/")) or "/src/" in file
+
+
+def _client_literals(root, files, texts):
+    next_app = '"next"' in texts["package.json"]
+    out = []
+    for file in files:
+        if not file.endswith(JS + (".vue", ".svelte", ".html")):
+            continue
+        text = texts[file]
+        if not KEY_LITERAL.search(text) or not is_browser_code(file, text, next_app):
+            continue
+        for n, line in enumerate(text.splitlines(), 1):
+            for m in KEY_LITERAL.finditer(line):
+                info = classify_secret(m[2], file, "")
+                if info["false_positive"] or info["severity"] not in ("Critical", "High"):
+                    continue
+                noun = re.sub(r"^(Exposed |Hardcoded )|( exposed)$", "", info["title"])
+                out.append(build("frontend-secret", "literal", root, file, n, secret=m[2], noun=noun, doc=SECRETS_DOC,
+                                 server_var=info["env_var"], money_risk=info["money_risk"], rotate=info["rotate"],
+                                 rotate_at=f" at {info['rotate']}" if info["rotate"] else ""))
+    return out
+
+
+# --- Supabase Row-Level Security, from migrations -----------------------------------------------------------
+
+def _migrations(root, files, texts):
+    sql = sorted(f for f in files if re.match(r"(.*/)?supabase/migrations/[^/]+\.sql$", f))
+    return supabase_sql.read([(f, texts[f]) for f in sql]) if sql else {}
+
+
+def _owner(t):
+    m = OWNER.search(t.columns)
+    if m:
+        return m[1]
+    return "id" if re.search(r"\bid\b[^,]*references\s+auth\.users", t.columns) else None
+
+
+def _policy_fix(t, cmd="all"):
+    owner = _owner(t)
+    if not owner:
+        return "+ -- then add policies saying who may read and change rows, e.g. using ((select auth.uid()) = user_id)"
+    verb = {"select": "read", "insert": "add", "update": "change", "delete": "delete"}.get(cmd, "read and change")
+    clause = f"using ((select auth.uid()) = {owner})" + ("" if cmd in ("select", "delete") else f" with check ((select auth.uid()) = {owner})")
+    if cmd == "insert":
+        clause = f"with check ((select auth.uid()) = {owner})"
+    return f"+ create policy \"Users {verb} their own rows\" on {t.name}\n+   for {cmd} to authenticated {clause};"
+
+
+VERBS = {"all": "read, change or delete", "update": "change", "delete": "delete", "select": "read", "insert": "add"}
+
+
+def _rls(root, tables):
+    out = []
+    for t in tables.values():
+        if not supabase_sql.exposed(t):
+            continue
+        short = t.name.removeprefix("public.")
+        if t.kind == "view":
+            if not t.invoker:
+                out.append(build("supabase-rls-off", "view", root, t.file, t.line, group=t.name, table=t.name))
+            continue
+        owner = _owner(t)
+        base = {"table": t.name, "policy_fix": _policy_fix(t), "owner_hint": f" (where {owner} = auth.uid())" if owner else ""}
+        if not t.rls:
+            at = t.toggled
+            line = at[1] if at else t.line
+            out.append(build("supabase-rls-off", "", root, at[0] if at else t.file, line, group=t.name, **base,
+                             disabled=f", because it was turned off at {at[0]}:{at[1]}" if at else "",
+                             extra_evidence=[f"Created at {t.file}:{t.line}"] if at else []))
+            continue
+        for p in t.policies.values():
+            audience = supabase_sql.who(p)
+            if not audience:
+                continue
+            anyone = audience == "anyone"
+            if p.cmd in ("all", "update", "delete"):
+                variant = "open-write" if anyone else "signed-in-write"
+            elif p.cmd == "select":
+                if not SENSITIVE.search(short):
+                    continue  # reference data (recipes, products, stations) is meant to be readable
+                variant = "open-read" if anyone else "signed-in-read"
+            else:  # insert
+                if not SENSITIVE.search(short):
+                    continue  # public forms (waitlist, contact) are meant to accept rows
+                variant = "open-insert"
+            conf = "Likely" if variant == "open-write" else "Needs review"
+            out.append(build("supabase-rls-off", variant, root, p.file, p.line, None, conf, group=t.name, **(base | dict(
+                policy=p.name, cmd=p.cmd, verbs=VERBS[p.cmd], policy_fix=_policy_fix(t, p.cmd), owner_or_user_id=owner or "user_id",
+                cmd_text={"all": "do anything", "select": "read rows", "insert": "add rows", "update": "change rows", "delete": "delete rows"}[p.cmd],
+                audience="anyone, signed in or not" if anyone else "any signed-in user"))))
+    return out
+
+
+def _server_guard(tables, table, cmd):
+    """For a browser-gated Supabase write: (confidence, note) when the server lets it through, False when RLS stops it,
+    None when we can't tell (no migrations for that table)."""
+    t = tables.get(f"public.{table}")
+    if not t or t.kind != "table":
+        return None
+    if not t.rls:
+        where = f"{t.toggled[0]}:{t.toggled[1]}" if t.toggled else f"{t.file}:{t.line}"
+        return "Confirmed reachable", f"Nothing on the server stops it either: Row-Level Security is off for {t.name} ({where})."
+    for p in t.policies.values():
+        if p.cmd in ("all", cmd) and supabase_sql.who(p):
+            return "Confirmed reachable", f"Nothing on the server stops it either: policy \"{p.name}\" ({p.file}:{p.line}) lets {supabase_sql.who(p)} {cmd} any row."
+    return False
+
+
+# --- Firebase security rules ---------------------------------------------------------------------------------
+
+ALLOW = re.compile(r"match\s+(/\S*)\s*\{|\{|\}|allow\s+([a-z,\s]+?)\s*(?::\s*if\s+([^;]+?))?\s*;", re.I)
+WILDCARD = re.compile(r"\{(\w+)(=\*\*)?\}")
+
+
+def _firebase(root, files, texts):
+    out = []
+    for file in files:
+        text = texts[file]
+        if file.endswith(".rules") and re.search(r"service\s+(cloud\.firestore|firebase\.storage)", text):
+            out += _firebase_rules(root, file, text)
+        elif file.endswith("database.rules.json") or (file.endswith(".json") and '"rules"' in text and '".read"' in text):
+            out += _rtdb_rules(root, file, text)
+    return out
+
+
+def _firebase_rules(root, file, text):
+    storage = "firebase.storage" in text
+    service = "storage bucket" if storage else "database"
+    stack, out = [], []
+    for m in ALLOW.finditer(text):
+        if m[1] is not None:
+            stack.append(m[1])
+        elif m[0] == "{":
+            stack.append(None)
+        elif m[0] == "}":
+            if stack:
+                stack.pop()
+        else:
+            ops = {o.strip().lower() for o in m[2].split(",") if o.strip()}
+            cond = re.sub(r"\s+", " ", m[3] or "").strip()
+            path = "".join(p for p in stack if p) or "/"
+            if path.startswith("/databases/{database}/documents"):
+                path = path.removeprefix("/databases/{database}/documents") or "/"
+            elif path.startswith("/b/{bucket}/o"):
+                path = path.removeprefix("/b/{bucket}/o") or "/"
+            line = text.count("\n", 0, m.start()) + 1
+            hit = _judge_rule(ops, cond, path)
+            if hit:
+                variant, conf, extra = hit
+                writes = ops & {"write", "create", "update", "delete"}
+                op_text = "read and write" if writes and ops - writes else "write to" if writes else "read"
+                coll = re.sub(r"/\{[^}]*\}", "", path).strip("/").split("/")[-1] or "data"
+                out.append(build("firebase-open-rules", variant, root, file, line, None, conf, service=service, path=path,
+                                 ops=op_text, ops_verb="read, change or delete" if writes else "read",
+                                 scope=("every file" if storage else "every document") if _root_wide(path) else path,
+                                 scope_data="every file in your storage bucket" if storage else "every document in your database",
+                                 cond="with no condition at all" if not cond else "with the condition `if true`, which lets everyone in"
+                                 if cond == "true" else f"when `{cond}`", raw_ops=m[2].strip(),
+                                 raw_cond=("if " + cond) if cond else "(no condition)", collection=coll, **extra))
+    return out
+
+
+def _root_wide(path):
+    return path == "/" or bool(re.fullmatch(r"/\{\w+=\*\*\}", path))
+
+
+def _judge_rule(ops, cond, path):
+    """(variant, confidence, extra vars) for a risky allow statement, or None."""
+    root_wide = _root_wide(path)
+    writes = bool(ops & {"write", "create", "update", "delete"})
+    test = re.match(r"request\.time\s*<\s*timestamp\.date\(\s*(\d{4})\s*,\s*(\d{1,2})\s*,\s*(\d{1,2})\s*\)$", cond)
+    if test:
+        until = date(*map(int, test.groups()))
+        return ("test-mode", "Likely", {"until": until.isoformat()}) if until >= date.today() else None
+    if cond in ("", "true"):
+        if writes or root_wide:
+            return "", "Likely", {}
+        name = re.sub(r"/\{[^}]*\}", "", path)
+        return ("open-read", "Needs review", {}) if SENSITIVE.search(name) else None
+    if re.fullmatch(r"request\.auth\s*!=\s*null|request\.auth\.uid\s*!=\s*null|request\.auth\s*!=\s*null\s*&&\s*true", cond):
+        if root_wide:
+            return "signed-in-all", "Likely", {}
+        var = next((m[1] for m in WILDCARD.finditer(path) if not m[2]), None)
+        if var and SENSITIVE.search(path) and var not in cond:
+            return "signed-in-other", "Likely", {"var": var}
+    return None
+
+
+def _rtdb_rules(root, file, text):
+    try:
+        rules = json.loads(text).get("rules", {})
+    except (ValueError, AttributeError):
+        return []
+    out, lines = [], text.splitlines()
+
+    def walk(node, path):
+        if not isinstance(node, dict):
+            return
+        for key in (".read", ".write"):
+            val = node.get(key)
+            if val is True or (isinstance(val, str) and val.strip() in ("true", "auth != null", "auth !== null")):
+                open_ = val is True or val.strip() == "true"
+                if not open_ and path != "/":
+                    continue
+                line = next((n for n, x in enumerate(lines, 1) if f'"{key}"' in x and str(val).lower() in x.lower()), 0)
+                ops = "write to" if key == ".write" else "read"
+                out.append(build("firebase-open-rules", "" if open_ else "signed-in-all", root, file, line, None, "Likely",
+                                 service="database", path=path, ops=ops, ops_verb="read, change or delete" if key == ".write" else "read",
+                                 scope="your whole Realtime Database" if path == "/" else path,
+                                 scope_data="everything in your Realtime Database", cond=f'with "{key}": {json.dumps(val)}',
+                                 raw_ops=key, raw_cond=json.dumps(val), collection=path.strip("/") or "data"))
+        for k, child in node.items():
+            if not k.startswith("."):
+                walk(child, path.rstrip("/") + "/" + k)
+
+    walk(rules, "/")
+    return out
+
+
+# --- rate limits on auth and paid-AI endpoints (cross-file) ---------------------------------------------------
+
+ROUTE = re.compile(r"\b(?:app|router|server|api|routes?)\.(post|put|patch|delete|all)\(\s*([\"'`])([^\"'`]*)\2", re.I)
+MOUNT = re.compile(r"\b(?:app|router|server)\.use\(\s*([\"'`])([^\"'`]*)\1\s*,\s*(?:require\(\s*([\"'`])([^\"'`]+)\3\s*\)|(\w+))")
+IMPORTED = re.compile(r"""(?:import\s+(\w+)\s+from|(?:const|let|var)\s+(\w+)\s*=\s*require\()\s*\(?\s*["'`](\.[^"'`]+)["'`]""")
+AUTH_PATH = re.compile(r"(?i)(^|/)(log-?in|sign-?in|sign-?up|register|password|reset-?password|forgot|otp|magic-?link|verify|2fa|mfa|auth)(/|$)")
+AI_CALL = re.compile(r"\.chat\.completions\.create|\.responses\.create|\.messages\.create|\b(generateText|streamText|generateObject|streamObject)\s*\(|"
+                     r"\.generateContent\(|api\.openai\.com|api\.anthropic\.com|api\.groq\.com|generativelanguage\.googleapis\.com|"
+                     r"ai\.gateway\.lovable\.dev|openrouter\.ai/api|api\.mistral\.ai|api\.perplexity\.ai|api\.deepseek\.com|replicate\.run\(|api\.elevenlabs\.io")
+LIMITER = re.compile(r"(?i)rate.?limit|ratelimit|slow.?down|throttl|\blimiter\b|express-brute|rate-limiter-flexible")
+
+
+def _rate_limits(root, files, texts):
+    code = [f for f in files if f.endswith(JS) and not TEST_PATH.search(f)]
+    if not code:
+        return []
+    # app-wide limiter (package or middleware); Edge Functions are separate deployments and are judged one by one below
+    limited = bool(LIMITER.search(texts["package.json"])) or any(
+        LIMITER.search(texts[f]) for f in code if (SERVER_PATH.search(f) or "express" in texts[f]) and "supabase/functions/" not in f)
+    mounts = {}
+    for f in code:
+        imports = {m[1] or m[2]: m[3] for m in IMPORTED.finditer(texts[f])}
+        for m in MOUNT.finditer(texts[f]):
+            target = _resolve(f, m[4] or imports.get(m[5] or "", ""), files)
+            if target:
+                mounts[target] = m[2].rstrip("/")
+    out = []
+    for f in code:
+        text = texts[f]
+        edge = re.match(r"(.*/)?supabase/functions/([^/_][^/]*)/index\.[jt]s$", f)
+        next_route = re.match(r"(?:src/)?app/(.*/)?route\.[jt]s$", f)
+        pages_api = re.match(r"(?:src/)?pages/(api/.+)\.[jt]sx?$", f)
+        if edge or next_route or pages_api:
+            if edge:
+                path, conf, method = f"/functions/v1/{edge[2]}", "Needs review", "POST"
+                if LIMITER.search(text) or re.search(r"""from\s+["'][^"']*rate[^"']*["']""", text, re.I):
+                    continue
+            else:
+                if limited:
+                    continue
+                parts = [p for p in ((next_route[1] or "") if next_route else pages_api[1]).split("/") if p and not p.startswith("(")]
+                path = "/" + "/".join(parts)
+                conf = "Likely"
+                exported = re.search(r"export\s+(?:async\s+)?(?:function|const)\s+(POST|PUT|PATCH|DELETE)\b", text)
+                if next_route and not exported:
+                    continue
+                method = exported[1] if exported else "POST"
+            line = re.search(r"export\s+(?:async\s+)?(?:function|const)\s+(POST|PUT|PATCH|DELETE)\b|\b(?:Deno\.)?serve\(|export\s+default", text) or re.search(r"\S", text)
+            n = text.count("\n", 0, line.start()) + 1 if line else 1
+            out += _rate_finding(root, f, n, method, path, text, conf)
+            continue
+        if limited:
+            continue
+        hits = list(ROUTE.finditer(text))
+        for i, m in enumerate(hits):
+            body = text[m.start() : hits[i + 1].start() if i + 1 < len(hits) else len(text)]
+            path = ("/" + "/".join(x for x in (mounts.get(f, "") + "/" + m[3]).split("/") if x)) or "/"
+            out += _rate_finding(root, f, text.count("\n", 0, m.start()) + 1, m[1].upper(), path, body, "Likely")
+    return out
+
+
+def _rate_finding(root, file, line, method, path, body, conf):
+    if AI_CALL.search(body):
+        return [build("no-rate-limit", "ai", root, file, line, None, conf, method=method, path=path)]
+    if AUTH_PATH.search(path):
+        return [build("no-rate-limit", "auth", root, file, line, None, conf, method=method, path=path)]
+    return []
+
+
+def _resolve(importer, spec, files):
+    if not spec.startswith("."):
+        return None
+    base = (Path(importer).parent / spec).as_posix()
+    base = re.sub(r"(^|/)\./", r"\1", base)
+    while "/../" in base:
+        base = re.sub(r"[^/]+/\.\./", "", base, count=1)
+    for cand in [base] + [base + e for e in JS] + [f"{base}/index{e}" for e in JS]:
+        if cand in files:
+            return cand
+    return None
+
+
+# --- Vue v-html / Svelte {@html} ------------------------------------------------------------------------------
+
+TEMPLATE_HTML = re.compile(r"""v-html\s*=\s*"(?!\s*['`])([^"]+)"|\{@html\s+(?!['"`])([^}]+)\}""")
+
+
+def _template_html(root, files, texts):
+    out = []
+    for file in files:
+        if file.endswith((".vue", ".svelte")) and not TEST_PATH.search(file):
+            for n, line in enumerate(texts[file].splitlines(), 1):
+                m = TEMPLATE_HTML.search(line)
+                if m and not re.search(r"(?i)sanitiz|purify", m[1] or m[2]):
+                    expr = (m[1] or m[2]).strip()
+                    fix = f"- {line.strip()}\n+ {line.strip().replace(expr, f'DOMPurify.sanitize({expr})')}"
+                    out.append(build("xss-sink", "pattern", root, file, n, None, "Needs review", value=expr, line_fix=fix))
+    return out
+

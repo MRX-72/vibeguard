@@ -1,6 +1,7 @@
 """Self-checks. Run: .venv/bin/python test_vibeguard.py  (pytest also works)."""
 
 import json
+import re
 import tempfile
 import zipfile
 from pathlib import Path
@@ -286,11 +287,20 @@ def test_npm_dependency_tiers():
 # The demo app's full expected report: every planted issue at its severity, every decoy filtered, nothing else.
 # Phase 4/5 changes that add, drop or re-rate anything must update this on purpose.
 DEMO = {
-    (".env", 3, "Critical"), (".env", 4, "High"), ("src/lib/ai.js", 5, "High"),  # service_role + OpenAI keys
+    (".env", 3, "Critical"), (".env", 4, "Critical"),  # service_role + OpenAI keys in NEXT_PUBLIC_ vars
+    ("src/lib/ai.js", 5, "Critical"), ("src/lib/supabase.js", 6, "Critical"),  # key + SDK in the browser; service_role read in the browser
+    ("server/routes/calc.js", 5, "Critical"), ("server/routes/users.js", 6, "Critical"),  # eval and SQL on request data (taint)
+    ("firestore.rules", 5, "Critical"),
+    ("supabase/migrations/20260101000000_init.sql", 1, "Critical"), ("supabase/migrations/20260101000000_init.sql", 26, "Critical"),  # RLS off
+    ("supabase/migrations/20260101000000_init.sql", 23, "High"),  # anyone can read entries
+    ("src/pages/Search.jsx", 9, "High"), ("src/components/CommentList.jsx", 17, "High"),  # XSS (taint, pattern)
+    ("src/pages/Admin.jsx", 6, "High"), ("src/pages/Admin.jsx", 14, "High"),  # client-only admin checks
     ("server/routes/auth.js", 10, "High"),  # JWT signing secret
-    ("server/routes/calc.js", 5, "High"),  # eval
-    ("server/routes/billing.js", 8, "High"),  # unsigned Stripe webhook (ast-grep)
-    ("supabase/functions/delete-account/index.ts", 12, "High"),  # service-role Edge Function with no caller check (ast-grep)
+    ("server/routes/billing.js", 8, "High"), ("supabase/functions/delete-account/index.ts", 12, "High"),
+    ("server/routes/upload.js", 4, "High"),  # any file type into public/
+    (".env.production", 2, "Medium"), ("server/index.js", 21, "Medium"),  # debug flags, stack traces in responses
+    ("server/routes/auth.js", 5, "Medium"), ("server/routes/chat.js", 6, "Medium"),  # no rate limit (login, paid AI)
+    ("server/index.js", 5, "Low"),  # CORS *
 }
 DEMO_NOISE = {(".env", 2), ("server/index.js", 4)}  # anon key (public by design), CSRF in an app without cookies
 DEMO_DEPS = {"axios@0.21.1", "express@4.17.1", "jsonwebtoken@8.5.1", "lodash@4.17.15", "multer@1.4.2"}
@@ -298,6 +308,7 @@ DEMO_DEPS = {"axios@0.21.1", "express@4.17.1", "jsonwebtoken@8.5.1", "lodash@4.1
 
 def test_scanners_on_sample_repo():
     """Integration: the demo app's report is exactly what we expect, and never leaks a secret."""
+    import shutil
     installed = [s for s in (cls() for cls in SCANNERS) if s.available()]
     if not installed:
         print("   (no scanners installed, skipped)")
@@ -310,10 +321,13 @@ def test_scanners_on_sample_repo():
         out = normalize.normalize(raw)
     names = {s.name for s in installed}
     by = {(f.file, f.line): f for f in out}
-    if {"gitleaks", "semgrep", "osv-scanner", "ast-grep"} <= names:
+    if {"gitleaks", "semgrep", "osv-scanner"} <= names and shutil.which("ast-grep"):
         code = {(f.file, f.line, f.severity) for f in out if f.kind != "dependency" and not f.is_false_positive}
-        expected = DEMO | ({("server/index.js", 9, "Medium")} if "njsscan" in names else set())  # wildcard CORS (njsscan only, until Phase 4)
-        assert code == expected, f"missing {expected - code}, unexpected {code - expected}"
+        assert code == DEMO, f"missing {DEMO - code}, unexpected {code - DEMO}"
+        # the three the demo script promises (§12), each confirmed and with a fix
+        for key in [("src/lib/ai.js", 5), ("src/pages/Search.jsx", 9), ("server/routes/users.js", 6)]:
+            assert by[key].fix_diff and by[key].explanation, key
+        assert by[("src/pages/Search.jsx", 9)].confidence == by[("server/routes/users.js", 6)].confidence == "Confirmed reachable"
         assert {(f.file, f.line) for f in out if f.is_false_positive} == DEMO_NOISE
         assert {f.package for f in out if f.kind == "dependency"} == DEMO_DEPS
     if "gitleaks" in names:
@@ -324,7 +338,7 @@ def test_scanners_on_sample_repo():
     if "osv-scanner" in names:
         axios = next(f for f in out if f.package == "axios@0.21.1")
         assert axios.file == "package.json" and axios.fix_diff.startswith('- "axios": "^0.21.1"')
-    if "ast-grep" in names:
+    if shutil.which("ast-grep"):
         hook = by[("server/routes/billing.js", 8)]
         assert hook.money_risk and "constructEvent" in hook.fix_diff and "server/routes/billing.js" in hook.reprompt
     dumped = json.dumps([f.model_dump() for f in out])
@@ -342,33 +356,181 @@ def _run(scanner, files):
     return scanner.skip(root), (None if scanner.skip(root) else normalize.normalize(scanner.run(root, work)))
 
 
-def test_ast_grep_rules():
-    """Each structural rule fires on its crafted positive and stays quiet on its negative."""
-    from scanners.astgrep import AstGrep
-    if not AstGrep().available():
+KEY = "sk-proj-" + "Tq7Wv2Lm9Xc4" * 4
+
+# One project holding a crafted positive and negative for every VibeGuard rule (§7, Phase 4).
+VIBE_FIXTURE = {
+    # frontend-secret
+    ".env": f"VITE_OPENAI_API_KEY={KEY}\nVITE_SUPABASE_URL=https://abc.supabase.co\nVITE_SUPABASE_ANON_KEY=ANON\nOPENAI_API_KEY={KEY}\n",
+    "src/lib/ai.ts": "const key = import.meta.env.VITE_OPENAI_API_KEY\n",
+    "src/lib/supabase.ts": "export const s = createClient(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY)\n",
+    "src/lib/openai.ts": "export const ai = new OpenAI({\n  apiKey: key,\n  dangerouslyAllowBrowser: true,\n})\n",
+    "server/openai.ts": f'export const ai = new OpenAI({{ apiKey: process.env.OPENAI_API_KEY }})\nconst backup = "{KEY}"\n',
+    "src/config.ts": f'export const live = "{KEY}"\nexport const demo = "sk-placeholder-00000000000000000000"\n',
+    # supabase-rls-off
+    "supabase/migrations/001_init.sql": (
+        "create table public.orders (id uuid primary key, user_id uuid, total int);\n"
+        "create table public.notes (id uuid primary key, user_id uuid, body text);\n"
+        "alter table public.notes enable row level security;\n"
+        "create policy \"own notes\" on public.notes for all to authenticated using ((select auth.uid()) = user_id);\n"
+        "create table public.recipes (id uuid primary key, name text);\n"
+        "alter table public.recipes enable row level security;\n"
+        "create policy \"recipes are public\" on public.recipes for select using (true);\n"
+        "create table public.profiles (id uuid primary key references auth.users, email text);\n"
+        "alter table public.profiles enable row level security;\n"
+        "create policy \"profiles readable\" on public.profiles for select using (true);\n"
+        "create table public.posts (id uuid primary key, author_id uuid, body text);\n"
+        "do $$ declare t text; begin foreach t in array array['posts'] loop\n"
+        "  execute format('alter table public.%I enable row level security', t); end loop; end $$;\n"
+        "create policy \"admins delete posts\" on public.posts for delete to authenticated using (public.is_admin());\n"
+        "create view public.order_totals as select user_id, sum(total) from public.orders group by user_id;\n"
+        "create view public.safe_totals with (security_invoker = true) as select 1;\n"),
+    # firebase-open-rules
+    "firestore.rules": ("rules_version = '2';\nservice cloud.firestore {\n  match /databases/{database}/documents {\n"
+                        "    match /users/{userId} {\n      allow read, write: if request.auth != null;\n    }\n"
+                        "    match /notes/{noteId} {\n      allow read, write: if request.auth.uid == resource.data.owner;\n    }\n"
+                        "    match /{document=**} {\n      allow read, write: if request.time < timestamp.date(2099, 1, 1);\n    }\n  }\n}\n"),
+    "storage.rules": ("service firebase.storage {\n  match /b/{bucket}/o {\n    match /avatars/{userId}/{file=**} {\n"
+                      "      allow write: if request.auth.uid == userId;\n      allow read: if request.time < timestamp.date(2020, 1, 1);\n    }\n  }\n}\n"),
+    "database.rules.json": '{\n  "rules": {\n    ".read": true,\n    ".write": "auth != null"\n  }\n}\n',
+    # client-only-auth
+    "src/pages/Admin.tsx": ('const isAdmin = localStorage.getItem("isAdmin") === "true"\nconst theme = localStorage.getItem("theme")\n'
+                            'async function drop(id) {\n  if (user.role === "admin") {\n    await supabase.from("orders").delete().eq("id", id)\n  }\n'
+                            '  if (user.role === "admin") {\n    await supabase.from("posts").delete().eq("id", id)\n  }\n}\n'),
+    # cors-wildcard
+    "server/app.js": ('const app = express()\napp.use(cors({ origin: true, credentials: true }))\n'
+                      'app.use("/api/auth", require("./routes/auth"))\napp.use((err, req, res, next) => res.status(500).json({ stack: err.stack }))\n'),
+    "server/public.js": "api.use(cors())\n",
+    "server/strict.js": 'api.use(cors({ origin: ["https://a.com"], credentials: true }))\nconsole.error(err.stack)\n',
+    "supabase/functions/hello/index.ts": 'const headers = { "Access-Control-Allow-Origin": "*" }\nDeno.serve(() => new Response("hi", { headers }))\n',
+    # xss-sink
+    "src/pages/Search.tsx": ('export default function Search() {\n  const [params] = useSearchParams()\n  const q = params.get("q")\n'
+                             '  return <h1 dangerouslySetInnerHTML={{ __html: `Results for ${q}` }} />\n}\n'),
+    "src/components/Post.tsx": ('export const Post = ({ post, css }) => (<>\n  <div dangerouslySetInnerHTML={{ __html: post.body }} />\n'
+                                '  <div dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(post.body) }} />\n'
+                                '  <div dangerouslySetInnerHTML={{ __html: "<b>static</b>" }} />\n  <style dangerouslySetInnerHTML={{ __html: css }} />\n</>)\n'),
+    "src/components/ui/chart.tsx": "export const C = ({ x }) => <div dangerouslySetInnerHTML={{ __html: x }} />\n",
+    "src/components/Bio.vue": '<template>\n  <div v-html="user.bio"></div>\n  <div v-html="\'<b>hi</b>\'"></div>\n</template>\n',
+    # sql-string-concat + eval-user-input + no-rate-limit + unrestricted-upload (Express routes)
+    "server/routes/auth.js": ('router.post("/login", async (req, res) => {\n'
+                              '  const r = await db.query("SELECT * FROM users WHERE email = \'" + req.body.email + "\'")\n'
+                              '  const ok = await db.query("SELECT * FROM users WHERE email = $1", [req.body.email])\n})\n'),
+    "server/routes/tools.js": ('router.post("/calc", (req, res) => {\n  res.json({ r: eval(req.body.expr) })\n})\n'
+                               'router.post("/safe", (req, res) => {\n  const n = parseInt(req.query.n)\n  res.json({ r: eval(n) })\n})\n'
+                               'router.post("/ls", (req, res) => {\n  exec(`ls ${req.query.dir}`)\n  execFile("ls", [req.query.dir])\n})\n'
+                               'const report = (table) => db.query(`SELECT * FROM ${table}`)\n'),
+    "server/routes/upload.js": ('const a = multer({ dest: "uploads/" })\nconst b = multer({ dest: "public/files" })\n'
+                                'const c = multer({ dest: "uploads/", limits: { fileSize: 1000000 } })\n'),
+    "supabase/functions/summarize/index.ts": ('Deno.serve(async (req) => {\n  const r = await fetch("https://api.openai.com/v1/chat/completions", {})\n'
+                                              '  return new Response(await r.text())\n})\n'),
+    "supabase/functions/limited/index.ts": ('import { rateLimit } from "../_shared/rate-limit.ts"\nDeno.serve(async (req) => {\n'
+                                            '  await rateLimit(req)\n  return fetch("https://api.openai.com/v1/responses")\n})\n'),
+    # debug-in-prod
+    ".env.production": "NODE_ENV=production\nDEBUG=true\n",
+    ".env.development": "DEBUG=true\n",
+}
+VIBE_EXPECTED = {
+    (".env", "frontend-secret:env-file"), ("src/lib/ai.ts", "frontend-secret:code-env"),
+    ("src/lib/openai.ts", "frontend-secret:browser-sdk"), ("src/config.ts", "frontend-secret:literal"),
+    ("supabase/migrations/001_init.sql", "supabase-rls-off"), ("supabase/migrations/001_init.sql", "supabase-rls-off:open-read"),
+    ("supabase/migrations/001_init.sql", "supabase-rls-off:view"),
+    ("firestore.rules", "firebase-open-rules:signed-in-other"), ("firestore.rules", "firebase-open-rules:test-mode"),
+    ("database.rules.json", "firebase-open-rules"), ("database.rules.json", "firebase-open-rules:signed-in-all"),
+    ("src/pages/Admin.tsx", "client-only-auth:storage-flag"), ("src/pages/Admin.tsx", "client-only-auth:guarded-mutation"),
+    ("server/app.js", "cors-wildcard:reflect-credentials"), ("server/public.js", "cors-wildcard:wildcard"),
+    ("server/app.js", "debug-in-prod:stack"), (".env.production", "debug-in-prod:env"),
+    ("src/pages/Search.tsx", "xss-sink"), ("src/pages/Search.tsx", "xss-sink:pattern"),
+    ("src/components/Post.tsx", "xss-sink:pattern"), ("src/components/Bio.vue", "xss-sink:pattern"),
+    ("server/routes/auth.js", "sql-string-concat"), ("server/routes/auth.js", "sql-string-concat:pattern"),
+    ("server/routes/tools.js", "sql-string-concat:pattern"),
+    ("server/routes/tools.js", "eval-user-input"), ("server/routes/tools.js", "eval-user-input:command"),
+    ("server/routes/auth.js", "no-rate-limit:auth"), ("supabase/functions/summarize/index.ts", "no-rate-limit:ai"),
+    ("server/routes/upload.js", "unrestricted-upload:any"), ("server/routes/upload.js", "unrestricted-upload:public"),
+}
+
+
+def _vibe(files):
+    """Every VibeGuard rule on a fixture project: Python checks + ast-grep (VibeRules) and the semgrep taint rules."""
+    import subprocess
+    from scanners import custom_rules
+    root = Path(tempfile.mkdtemp())
+    for name, text in files.items():
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_text(text.replace("ANON", _jwt("anon")))
+    work = Path(tempfile.mkdtemp())
+    found = custom_rules.VibeRules().run(root, work)
+    r = subprocess.run(["semgrep", "scan", "--json", "--quiet", "--metrics=off", "--config", "rules/vibe-coded.yml", str(root)],
+                       capture_output=True, text=True)
+    found += [custom_rules.from_semgrep(root, x) for x in json.loads(r.stdout)["results"]]
+    return root, found
+
+
+def test_vibe_rules():
+    """Each §7 rule fires on its crafted positive and stays quiet on its negative, with complete report text."""
+    import shutil
+    if not (shutil.which("ast-grep") and shutil.which("semgrep")):
+        return print("   (ast-grep or semgrep not installed, skipped)")
+    root, found = _vibe(VIBE_FIXTURE)
+    hits = {(f.file, f.raw_rule_id.removeprefix("vibe.").split("@")[0]) for f in found}
+    assert hits == VIBE_EXPECTED, f"missing {VIBE_EXPECTED - hits}, unexpected {hits - VIBE_EXPECTED}"
+    by = {(f.file, f.raw_rule_id.removeprefix("vibe.").split("@")[0], f.line): f for f in found}
+    # the right lines, and nothing from the negatives
+    assert {f.line for f in found if f.file == "src/config.ts"} == {1}  # the placeholder on line 2 is ignored
+    assert {f.line for f in found if f.file == "src/components/Post.tsx"} == {2}  # sanitized, static and <style> are fine
+    assert {f.line for f in found if f.raw_rule_id == "vibe.eval-user-input"} == {2}  # parseInt() sanitizes line 6
+    assert {f.line for f in found if f.raw_rule_id == "vibe.eval-user-input:command"} == {9}  # execFile with an array is safe
+    assert {f.line for f in found if f.raw_rule_id.startswith("vibe.unrestricted-upload")} == {1, 2}
+    assert {f.raw_rule_id.split("@")[1] for f in found if f.raw_rule_id.startswith("vibe.supabase-rls-off")} == {
+        "public.orders", "public.profiles", "public.order_totals"}  # notes (own rows), recipes (public data), posts (DO-block RLS) are fine
+    # confidence: taint proves reachability; the browser-gated delete on orders is confirmed by the migration (RLS off)
+    assert by[("src/pages/Search.tsx", "xss-sink", 4)].confidence == "Confirmed reachable"
+    mutation = next(f for f in found if f.raw_rule_id == "vibe.client-only-auth:guarded-mutation")
+    assert mutation.line == 5 and mutation.confidence == "Confirmed reachable" and "public.orders" in mutation.explanation
+    sql = next(f for f in found if f.raw_rule_id == "vibe.sql-string-concat")
+    assert sql.fix_diff.endswith('db.query("SELECT * FROM users WHERE email = $1", [req.body.email])')
+    xss = by[("src/pages/Search.tsx", "xss-sink", 4)]
+    assert "+ return <h1>Results for {q}</h1>" in xss.fix_diff
+    # every finding is complete, with every catalog {placeholder} filled in
+    from scanners.custom_rules import CATALOG, VARIANTS, POLICY_REPROMPT
+    templates = [str(x) for spec in [*CATALOG.values(), *VARIANTS.values()] for x in spec.values()] + [POLICY_REPROMPT]
+    unfilled = re.compile(r"(?<!\$)\{(" + "|".join({m for t in templates for m in re.findall(r"(?<!\$)\{(\w+)\}", t)}) + r")\}")
+    for f in found:
+        for field in ("title", "impact", "severity_reason", "explanation", "fix_diff", "reprompt"):
+            text = getattr(f, field)
+            assert text and not unfilled.search(text), (f.raw_rule_id, field, text)
+    dumped = json.dumps([f.model_dump() for f in normalize.normalize(found)])
+    assert KEY[:16] not in dumped, "a key leaked into the report"
+
+
+def test_rate_limit_and_client_code_negatives():
+    """A project with a rate limiter has no rate-limit findings; Next.js server components aren't browser code."""
+    import shutil
+    from scanners.custom_rules import is_browser_code
+    if not shutil.which("ast-grep"):
         return print("   (ast-grep not installed, skipped)")
-    edge = 'Deno.serve(async (req) => {{\n  {check}\n  const db = createClient(url, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!)\n}})\n'
-    hook = 'app.post("/hook", async (req, res) => {{\n  {check}\n  if (event.type === "checkout.session.completed") grant(event)\n}})\n'
-    _, out = _run(AstGrep(), {
-        "supabase/functions/open/index.ts": edge.format(check=""),
-        "supabase/functions/checked/index.ts": edge.format(check="const { data: { user } } = await anon.auth.getUser()"),
-        "supabase/functions/internal/index.ts": edge.format(check='if (req.headers.get("Authorization") !== expected) return'),
-        "app/api/me/route.ts": "export async function GET() {\n  const { data } = await supabase.auth.getSession()\n}\n",
-        "src/lib/session.ts": "export const token = () => supabase.auth.getSession()\n",  # browser code: fine
-        "src/routes/fn.tsx": "export const f = createServerFn().handler(async () => {\n  await supabase.auth.getSession()\n})\n",
-        "src/actions.ts": "'use server'\nexport async function save() {\n  await supabase.auth.getSession()\n}\n",
-        "server/hook.js": hook.format(check="const event = req.body"),
-        "server/hook-ok.js": hook.format(check='const event = stripe.webhooks.constructEvent(raw, req.headers["stripe-signature"], secret)'),
-    })
-    hits = {(f.file, f.raw_rule_id.split(".")[-1]) for f in out}
-    assert hits == {
-        ("supabase/functions/open/index.ts", "supabase-edge-service-role-no-auth"),
-        ("app/api/me/route.ts", "supabase-getsession-on-server"),
-        ("src/routes/fn.tsx", "supabase-getsession-in-server-fn"),
-        ("src/actions.ts", "supabase-getsession-in-server-fn"),
-        ("server/hook.js", "stripe-webhook-unsigned"),
-    }, hits
-    assert all(f.explanation and f.impact and f.fix_diff and f.reprompt and f.cwe for f in out)
+    _, found = _vibe({"package.json": '{"dependencies": {"express-rate-limit": "7"}}',
+                      "server/routes/auth.js": 'router.post("/login", (req, res) => res.json({}))\n'})
+    assert not [f for f in found if "rate-limit" in f.raw_rule_id]
+    assert is_browser_code("src/App.tsx", "", next_app=False) and not is_browser_code("src/routes/api.server.ts", "", False)
+    assert not is_browser_code("app/page.tsx", "export default function P() {}", next_app=True)
+    assert is_browser_code("app/page.tsx", '"use client"\nexport default function P() {}', next_app=True)
+    assert not is_browser_code("src/lib/fns.ts", "export const f = createServerFn().handler(() => 1)", next_app=False)
+
+
+def test_supabase_sql_reader():
+    from scanners import supabase_sql as q
+    sql = ("-- comment ; with a semicolon\ncreate table if not exists \"public\".\"Items\" (id int);\n"
+           "create function f() returns void as $$ begin perform 1; end $$ language plpgsql;\n"
+           "ALTER TABLE public.items ENABLE ROW LEVEL SECURITY;\n"
+           "CREATE POLICY \"x\" ON public.items AS RESTRICTIVE FOR UPDATE TO anon USING (true);\n"
+           "create policy y on items for insert to authenticated with check (auth.uid() is not null);\n"
+           "create table public.secret (id int);\nrevoke all on public.secret from anon, authenticated;\n")
+    t = q.read([("m.sql", sql)])
+    items = t["public.items"]
+    assert items.rls and items.line == 2 and set(items.policies) == {"x", "y"}
+    assert q.who(items.policies["x"]) is None  # restrictive policies only narrow access
+    assert q.who(items.policies["y"]) == "signed-in"
+    assert not q.exposed(t["public.secret"])  # revoked from the API roles
 
 
 def test_zizmor_bandit_lockfile_lint():

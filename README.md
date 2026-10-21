@@ -44,13 +44,19 @@ Optional but faster: cache the Semgrep rule packs (`p/default` + `p/owasp-top-te
 cd backend && .venv/bin/python rules/fetch_registry.py   # writes rules/registry.json (gitignored)
 ```
 
+## VibeGuard rules
+
+Our own checks for mistakes AI app builders make (VibeGuard.md §7), in `backend/rules/` and `backend/scanners/custom_rules.py`:
+semgrep taint rules (`rules/vibe-coded.yml`), ast-grep structural rules (`rules/ast-grep/rules/`), and Python checks for env files,
+Supabase migrations, Firebase rules and rate limits. Every rule's report text (title, severity, fix, re-prompt) is in `CATALOG`.
+
 ## Checks
 
 ```sh
 cd backend && PATH="$HOME/.local/bin:$PATH" .venv/bin/python test_vibeguard.py
 ```
 
-Covers ingestion safety (zip traversal, size caps, cleanup), dedupe, secret classification and masking, dependency tiers across npm/pnpm/yarn lockfiles, each ast-grep rule against a crafted positive and negative, and runs every installed scanner against `sample-repo/`, whose full expected report is pinned in the test.
+Covers ingestion safety (zip traversal, size caps, cleanup), dedupe, secret classification and masking, dependency tiers across npm/pnpm/yarn lockfiles, every VibeGuard rule against a crafted positive and negative, the Supabase migration reader, and runs every installed scanner against `sample-repo/`, whose full expected report is pinned in the test.
 
 ## Environment
 

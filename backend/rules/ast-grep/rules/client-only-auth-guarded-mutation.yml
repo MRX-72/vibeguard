@@ -1,0 +1,14 @@
+id: client-only-auth-guarded-mutation
+language: tsx
+severity: error
+message: Admin-only write checked only in the browser
+ignores: ["**/server/**", "**/api/**", "**/supabase/functions/**", "**/*.server.*", "**/scripts/**", "**/middleware.*", "**/route.*", "**/*.config.*"]
+rule:
+  pattern: $CLIENT.from($TABLE).$WRITE($$$)
+  inside:
+    kind: if_statement
+    stopBy: end
+    has: {field: condition, regex: (?i)admin|role|is_?staff|permission|is_?owner|can_?(delete|edit|manage)}
+constraints:
+  WRITE: {regex: ^(delete|update|insert|upsert)$}
+metadata: {vibe: client-only-auth, variant: guarded-mutation, confidence: Needs review}

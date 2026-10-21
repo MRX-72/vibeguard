@@ -46,7 +46,7 @@ export default function FindingRow({ finding: f, index }) {
           )}
           {f.evidence?.length > 0 && (
             <div>
-              <p className="mb-2 text-sm text-muted">{f.kind === 'dependency' ? 'Advisories' : 'How the data gets there'}</p>
+              <p className="mb-2 text-sm text-muted">{f.kind === 'dependency' ? 'Advisories' : 'Evidence'}</p>
               <ul className="flex flex-col gap-1.5 text-sm leading-relaxed text-muted">
                 {f.evidence.map((e, i) => <li key={i} className="break-words">{e}</li>)}
               </ul>

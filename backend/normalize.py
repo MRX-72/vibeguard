@@ -6,7 +6,7 @@ from models import SEVERITIES, Finding
 from scanners.base import TEST_PATH, lower, mask, mask_in, worst
 
 # Which scanner's version of a duplicate we keep (first wins): the most specific source, with the most precise line.
-PRIORITY = ["custom", "gitleaks", "trufflehog", "ast-grep", "semgrep", "bandit", "njsscan", "zizmor", "osv-scanner", "lockfile-lint", "retire.js"]
+PRIORITY = ["vibeguard", "gitleaks", "trufflehog", "semgrep", "bandit", "njsscan", "zizmor", "osv-scanner", "lockfile-lint", "retire.js"]
 CONFIDENCE = ["Confirmed reachable", "Likely", "Needs review"]
 
 # Plain-English title + impact per weakness, used when a scanner only gives rule-speak.
@@ -107,6 +107,9 @@ def _group_repeats(findings):
         if len(group) > 1:
             files = {f.file for f in group}
             keep.severity = worst(*(f.severity for f in group))
+            keep.detected_by = list(dict.fromkeys(s for f in group for s in f.detected_by))
+            keep.fix_diff = "\n\n".join(dict.fromkeys(f.fix_diff for f in group if f.fix_diff))  # each place's own fix
+            keep.confidence = min((f.confidence for f in group), key=CONFIDENCE.index)
             keep.evidence = [(f"{f.file}:{f.line}" if len(files) > 1 else f"Line {f.line}") + f": {_flagged(f)}" for f in group] + keep.evidence
             keep.explanation = (f"This shows up in {len(group)} places" + (f" across {len(files)} files. " if len(files) > 1 else f" in {keep.file}. ")
                                 + keep.explanation)
@@ -138,12 +141,14 @@ def _same(a, b):
 def _absorb(keep: Finding, other: Finding):
     if other.kind == "secret" and other.confidence == "Confirmed reachable":  # its provider accepted it: never a placeholder
         keep.is_false_positive, keep.triage_note, keep.evidence = False, "", other.evidence + keep.evidence
-    if not keep.is_false_positive and SEVERITIES.index(other.severity) < SEVERITIES.index(keep.severity):
+    # a VibeGuard rule's rating is deliberate (it knows the framework context), so a generic rule doesn't override it
+    if not keep.is_false_positive and keep.source != "vibeguard" and SEVERITIES.index(other.severity) < SEVERITIES.index(keep.severity):
         # a "public by design" verdict on the value outranks a generic rule's severity; otherwise the worst rating wins, with its reason
         keep.severity, keep.severity_reason = other.severity, other.severity_reason or keep.severity_reason
     keep.detected_by = list(dict.fromkeys(keep.detected_by + [other.source]))
     keep.cwe = sorted(set(keep.cwe) | set(other.cwe), key=lambda c: int(c[4:]))
-    keep.refs = list(dict.fromkeys(keep.refs + other.refs))
+    if keep.source != "vibeguard":  # our rules carry hand-picked references
+        keep.refs = list(dict.fromkeys(keep.refs + other.refs))
     keep.money_risk = keep.money_risk or other.money_risk
     keep.evidence = keep.evidence or other.evidence
     keep.explanation = keep.explanation or other.explanation

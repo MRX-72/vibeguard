@@ -1,0 +1,25 @@
+id: xss-dangerously-set-inner-html
+language: tsx
+severity: error
+message: HTML rendered from data without sanitizing
+ignores: ["**/components/ui/**"]  # vendored shadcn/ui (its chart injects theme CSS, not user data)
+rule:
+  kind: pair
+  has: {field: key, regex: ^__html$}
+  inside:
+    kind: jsx_attribute
+    regex: ^dangerouslySetInnerHTML
+    stopBy: end
+    not:
+      inside:  # <style> and <script type="application/ld+json"> hold CSS/JSON, not user-visible HTML
+        any:
+          - {kind: jsx_self_closing_element, regex: ^<(style|script)\b}
+          - {kind: jsx_opening_element, regex: ^<(style|script)\b}
+  not:
+    has:
+      field: value
+      any:
+        - kind: string
+        - {kind: template_string, not: {has: {kind: template_substitution}}}
+        - {kind: call_expression, regex: (?i)^(DOMPurify\.sanitize|\w+\.sanitize|sanitize\w*|xss|escape\w*|JSON\.stringify)\s*\(}
+metadata: {vibe: xss-sink, variant: pattern, confidence: Needs review}

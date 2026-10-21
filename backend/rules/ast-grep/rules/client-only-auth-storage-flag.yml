@@ -1,0 +1,10 @@
+id: client-only-auth-storage-flag
+language: tsx
+severity: error
+message: Access decided by a value in the browser's storage
+rule:
+  pattern: $STORE.getItem($KEY)
+constraints:
+  STORE: {regex: ^(window\.)?(localStorage|sessionStorage)$}
+  KEY: {regex: (?i)admin|role|permission|premium|is_?pro\b|is_?paid|subscribed|access_?level|staff|vip|is_?owner}
+metadata: {vibe: client-only-auth, variant: storage-flag, confidence: Likely}

@@ -1,0 +1,13 @@
+id: cors-wildcard
+language: tsx
+severity: info
+message: API allows requests from any website
+ignores: ["**/supabase/functions/**"]  # Supabase's own Edge Function template; those use bearer tokens, not cookies
+rule:
+  any:
+    - pattern: cors()
+    - all:
+        - pattern: cors($OPTS)
+        - has: {kind: pair, regex: '^origin\s*:\s*["''`]\*["''`]', stopBy: end}
+    - {kind: call_expression, regex: '(?is)^\w+\.(set|setHeader|header|append)\(\s*["'']access-control-allow-origin["'']\s*,\s*["'']\*["'']'}
+metadata: {vibe: cors-wildcard, variant: wildcard, confidence: Needs review}

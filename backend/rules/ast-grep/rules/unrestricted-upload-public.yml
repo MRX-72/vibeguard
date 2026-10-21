@@ -1,0 +1,10 @@
+id: unrestricted-upload-public
+language: tsx
+severity: error
+message: Uploads of any type are saved into a public folder
+rule:
+  pattern: multer($$$)
+  all:
+    - not: {has: {kind: pair, regex: ^(fileFilter|limits)\b, stopBy: end}}
+    - has: {kind: pair, regex: '^(dest|destination)\s*:\s*["''`](\./)?(public|static|www)\b', stopBy: end}
+metadata: {vibe: unrestricted-upload, variant: public, confidence: Likely}

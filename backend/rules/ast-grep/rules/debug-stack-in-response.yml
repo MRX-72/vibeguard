@@ -1,0 +1,11 @@
+id: debug-stack-in-response
+language: tsx
+severity: warning
+message: Error responses include stack traces
+rule:
+  pattern: $ERR.stack
+  inside:
+    kind: call_expression
+    stopBy: end
+    regex: ^(\w+(\.status\([^)]*\))?\.(json|send|end|write)|NextResponse\.json|Response\.json|new Response|c\.json)\s*\(
+metadata: {vibe: debug-in-prod, variant: stack, confidence: Likely}
