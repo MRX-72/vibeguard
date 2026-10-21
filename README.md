@@ -87,10 +87,10 @@ The report opens with the grade, a one-line verdict and the three findings that 
 
 The API runs on Render's free plan from the `Dockerfile` (pinned scanners, semgrep rules baked in, unprivileged user); the UI is static on Firebase Hosting. The `image` workflow builds the same image on every push and runs the demo scan inside it.
 
-1. Push to GitHub. On Render: **New → Blueprint**, pick the repo (`render.yaml`), then set `GROQ_API_KEY` and `ALLOWED_ORIGINS` (`https://<project>.web.app,https://<project>.firebaseapp.com`).
+1. Push to GitHub. On Render: **New → Blueprint**, pick the repo (`render.yaml`), then set `GROQ_API_KEY` and `ALLOWED_ORIGINS` (`https://vibeguard-scan.web.app,https://vibeguard-scan.firebaseapp.com`).
 2. Build and deploy the UI against the Render URL:
    ```bash
    cd frontend && VITE_API_BASE_URL=https://<service>.onrender.com npm run build && cd ..
-   firebase deploy --only hosting --project <project>
+   firebase deploy --only hosting
    ```
 3. Open the site from a phone and run the demo. The free API sleeps after 15 idle minutes; the page says "Waking the scanner" while it starts (about a minute), so open it once before you show it.

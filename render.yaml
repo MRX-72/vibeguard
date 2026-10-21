@@ -15,4 +15,4 @@ services:
       - key: TRIAGE_BACKEND
         value: groq
       - key: ALLOWED_ORIGINS
-        sync: false  # the Firebase Hosting origins, e.g. https://<project>.web.app,https://<project>.firebaseapp.com
+        sync: false  # the Firebase Hosting origins, https://vibeguard-scan.web.app,https://vibeguard-scan.firebaseapp.com
