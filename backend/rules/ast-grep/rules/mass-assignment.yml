@@ -7,4 +7,6 @@ rule:
   all:
     - has: {field: function, regex: '\.(update|insert|upsert|create|createMany|updateOne|updateMany|findOneAndUpdate|findByIdAndUpdate|save)$'}
     - has: {field: arguments, regex: '^\(\s*(\{\s*(data\s*:\s*)?(\.\.\.)?\s*)?(req|request|ctx\.request)\.body\s*[,)}]'}
+    # hashing the body to check a webhook signature (createHmac(…).update(req.body)) is the opposite of this bug
+    - not: {has: {field: function, regex: '(?i)createH(ash|mac)|cipher|\bhmac\b|\bhash(er)?\b|\bsha\d*\b|\bmd5\b'}}
 metadata: {vibe: mass-assignment, confidence: Likely}

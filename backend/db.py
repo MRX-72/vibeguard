@@ -61,6 +61,9 @@ def connect():
 def init():
     with connect() as c:
         c.executescript(SCHEMA)
+        # a scan that was running when the server stopped will never finish: say so instead of polling forever
+        c.execute("UPDATE scans SET status = 'failed', stage = 'Failed', error = 'The server restarted during this scan. Run it again.' "
+                  "WHERE status IN ('queued', 'running')")
 
 
 def _row(r):
@@ -91,6 +94,11 @@ def save_findings(scan_id, findings):
     sql = f"INSERT INTO findings ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})"
     with connect() as c:
         c.executemany(sql, [[json.dumps(r[k]) if k in JSON_COLS else r[k] for k in cols] for r in rows])
+
+
+def active_scans():
+    with connect() as c:
+        return c.execute("SELECT COUNT(*) FROM scans WHERE status IN ('queued', 'running')").fetchone()[0]
 
 
 def get_scan(scan_id):

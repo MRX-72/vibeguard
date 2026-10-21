@@ -44,10 +44,13 @@ rules:
               - pattern: $DB.execute($SQL, ...)
               - pattern: $DB.raw($SQL, ...)
               - pattern: $DB.unsafe($SQL, ...)
-              - pattern: $DB.exec($SQL, ...)
               - pattern: $DB.prepare($SQL, ...)
               - pattern: $DB.$queryRawUnsafe($SQL, ...)
               - pattern: $DB.$executeRawUnsafe($SQL, ...)
+              - patterns:  # .exec() is also RegExp's and child_process's: only on something named like a database
+                  - pattern: $DB.exec($SQL, ...)
+                  - metavariable-regex: {metavariable: $DB, regex: '(?i).*(db|sql|database|conn|client|pool|knex|tx|trx)'}
+          - pattern-not: $DB.$METHOD({...}, ...)  # an options object (GraphQL client.query({ query, variables })) isn't SQL text
           - focus-metavariable: $SQL
       - patterns:  # PostgREST filter strings: .or(`name.eq.${input}`) lets the caller add their own filters
           - pattern: $Q.or($FILTER, ...)
@@ -124,8 +127,11 @@ rules:
     pattern-sinks:
       - patterns:
           - pattern-either:
-              - pattern: $CP.exec($CMD, ...)
-              - pattern: $CP.execSync($CMD, ...)
+              - patterns:  # child_process, not RegExp.prototype.exec
+                  - pattern-either:
+                      - pattern: $CP.exec($CMD, ...)
+                      - pattern: $CP.execSync($CMD, ...)
+                  - metavariable-regex: {metavariable: $CP, regex: '(?i)^(cp|proc|shell|.*child_?process.*)$'}  # anchored at the start, like re.match
               - pattern: exec($CMD, ...)
               - pattern: execSync($CMD, ...)
               - pattern: "$CP.spawn($CMD, ..., {..., shell: true, ...})"

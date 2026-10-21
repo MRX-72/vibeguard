@@ -45,15 +45,20 @@ function ScanView({ scanId }) {
 
   useEffect(() => {
     let stopped = false
+    let misses = 0
     const tick = async () => {
       try {
         const s = await getStatus(scanId)
         if (stopped) return
+        misses = 0
         setStatus(s)
         if (s.status === 'done') setReport(await getReport(scanId))
         else if (s.status !== 'failed') setTimeout(tick, 800)
       } catch (e) {
-        if (!stopped) setError(e.message)
+        if (stopped) return
+        // a dropped connection or a busy server mid-scan isn't a failed scan: try again a few times
+        if ((e.status ?? 503) >= 500 && ++misses <= 4) setTimeout(tick, 2000)
+        else setError(e.message)
       }
     }
     tick()

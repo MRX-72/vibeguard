@@ -7,6 +7,7 @@ import normalize
 import scoring
 from scanners import ALL as SCANNERS
 from scanners.base import ScannerError
+from scanners.custom_rules import settle
 
 log = logging.getLogger("vibeguard")
 
@@ -33,13 +34,16 @@ def run_scan(scan_id, source_type, payload, label=None, verify_secrets=False):
                 _set(steps, "ingest", "done", f"{n:,} file{'s' * (n != 1)}")
                 work = root.parent / "work"
                 work.mkdir()
-                raw = []
-                for scanner in SCANNERS:
-                    raw += _run_one(scan_id, scanner(verify_secrets=verify_secrets), root, work, steps)
+                raw, scanners = [], [s(verify_secrets=verify_secrets) for s in SCANNERS]
+                for scanner in scanners:
+                    raw += _run_one(scan_id, scanner, root, work, steps)
                 if not any(s["state"] == "done" for s in steps[1:]):
                     # an empty report here would read as "all clear", which would be a lie
                     raise ingest.IngestError("None of the scanners could run on this server, so nothing was checked. Try again later.")
                 findings = normalize.normalize(raw)
+                for scanner, step in zip(scanners, steps[1:], strict=True):
+                    if scanner.passed and step["state"] == "done":  # "already right" only where the final report agrees
+                        step["passed"] = settle(scanner.passed, findings)
             db.save_findings(scan_id, findings)
             db.update_scan(scan_id, status="done", stage="Done", steps=steps, risk_score=scoring.risk_score(findings))
         except Exception as e:  # any failure must still end the job, never leave it "running"
@@ -68,7 +72,7 @@ def _run_one(scan_id, scanner, root, work, steps):
         log.exception("%s crashed", scanner.name)
         _set(steps, scanner.name, "failed", "didn't finish (unexpected error)")
         return []
-    _set(steps, scanner.name, "done", f"{len(found)} finding{'s' * (len(found) != 1)}", checked=scanner.checked, passed=list(scanner.passed))
+    _set(steps, scanner.name, "done", f"{len(found)} finding{'s' * (len(found) != 1)}", checked=scanner.checked)
     return found
 
 

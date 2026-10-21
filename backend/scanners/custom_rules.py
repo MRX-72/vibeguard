@@ -186,9 +186,9 @@ CATALOG = {
     ),
     "supabase-privilege-escalation": dict(
         severity="Critical", kind="config", cwe=["CWE-269"],
-        title="Anyone can sign up as an admin",
-        impact="Anyone can create an account with admin rights and use everything an admin can.",
-        reason="It takes one sign-up call with an extra field, and it unlocks everything admins can do.",
+        title="Anyone can sign up {as_what}",
+        impact="Anyone can create an account with {gets}.",
+        reason="It takes one sign-up call with one extra field, and nothing on the server checks it.",
         explanation="{fn} copies {key} from the new user's sign-up metadata into {target}. The person signing up chooses that "
                     "metadata (supabase.auth.signUp({ options: { data: { {key}: ... } } })), so they can pick their own role.",
         fix="- {line_text}\n+ -- never take roles from sign-up data: give everyone the lowest role, and promote admins by hand\n"
@@ -251,7 +251,7 @@ CATALOG = {
         fix="- {line_text}\n+ {line_fix}",
         reprompt="In {file}, give every login token a short lifetime (jwt.sign(payload, secret, { expiresIn: \"1h\" })) and add "
                  "refresh tokens if users need to stay logged in longer.",
-        refs=["https://cheatsheetseries.owasp.org/cheatsheets/JSON_Web_Token_for_Java_Cheat_Sheet.html#token-explicit-revocation-by-the-user"],
+        refs=["https://github.com/auth0/node-jsonwebtoken#token-expiration-exp-claim"],
     ),
     "mass-assignment": dict(
         severity="High", kind="code", cwe=["CWE-915"],
@@ -638,10 +638,10 @@ class VibeRules(Scanner):
                     + _firebase(root, files, texts) + _rate_limits(root, files, texts) + _template_html(root, files, texts))
         findings += _auth_checks(root, files, texts)
         structural = super().available()
-        if structural and any(f.endswith(JS) for f in files):
+        if structural and any(f.endswith((*JS, ".py")) for f in files):
             findings += self._ast_grep(root, work, tables)
         _connect(root, findings, files, texts)
-        self.passed = _passed(findings, files, texts, schema)
+        self.passed = _passed(files, texts, schema)  # settled against the final report by the pipeline
         self.checked = f"{len(files):,} file{'s' * (len(files) != 1)}" + ("" if structural else " (structural rules skipped: ast-grep isn't installed)")
         return findings
 
@@ -1033,28 +1033,42 @@ SERVER_PATH = re.compile(r"(^|/)(server|api|backend|functions|scripts|edge|worke
                          r"(^|/)(middleware|route)\.[mc]?[jt]sx?$|\.config\.[mc]?[jt]s$")
 
 
-def is_browser_code(file, text, next_app):
+FRONTEND = re.compile(r'"(react|react-dom|vue|svelte|@sveltejs/kit|nuxt|astro|solid-js|preact|@angular/core|vite|expo)"\s*:')
+BACKEND = re.compile(r'"(express|fastify|koa|hono|@nestjs/core|@hapi/hapi|restify|@adonisjs/core)"\s*:')
+
+
+def _stack(texts):
+    """'next', 'backend' (a Node API with no frontend framework, so its src/ never reaches a browser) or ''."""
+    pkg = texts["package.json"]
+    if '"next"' in pkg:
+        return "next"
+    return "backend" if BACKEND.search(pkg) and not FRONTEND.search(pkg) else ""
+
+
+def is_browser_code(file, text, stack):
     """Code that ends up in the browser bundle: React/Vue components and modules under src/, Next.js client components."""
     if not file.endswith(JS + (".vue", ".svelte", ".html")) or SERVER_PATH.search(file) or TEST_PATH.search(file):
         return False
+    if stack == "backend":  # only the static files it serves
+        return file.startswith(("public/", "static/"))
     head = text[:300]
     if re.search(r"""^\s*["']use client["']""", head, re.M):
         return True
     if re.search(r"""^\s*["']use server["']""", head, re.M) or "createServerFn" in text:
         return False
-    if next_app:  # app/ files are server components unless marked "use client"; pages/ (non-API) ship to the browser
+    if stack == "next":  # app/ files are server components unless marked "use client"; pages/ (non-API) ship to the browser
         return bool(re.match(r"(src/)?pages/", file))
     return file.startswith(("src/", "client/", "frontend/", "web/", "public/")) or "/src/" in file
 
 
 def _client_literals(root, files, texts):
-    next_app = '"next"' in texts["package.json"]
+    stack = _stack(texts)
     out = []
     for file in files:
         if not file.endswith(JS + (".vue", ".svelte", ".html")):
             continue
         text = texts[file]
-        if not KEY_LITERAL.search(text) or not is_browser_code(file, text, next_app):
+        if not KEY_LITERAL.search(text) or not is_browser_code(file, text, stack):
             continue
         for n, line in enumerate(text.splitlines(), 1):
             for m in KEY_LITERAL.finditer(line):
@@ -1153,6 +1167,11 @@ def _find_line(text, start, needle):
     return next((n for n in range(start, len(lines) + 1) if re.search(needle, lines[n - 1], re.I)), start)
 
 
+SIGNUP = {"admin": ("as an admin", "admin rights, and use everything an admin can"),
+          "a paid plan": ("with a paid plan", "a paid plan, without paying"),
+          "more credits": ("with any number of credits", "as many credits as they like")}
+
+
 def _col_label(col):
     if re.match(r"plan|tier|is_premium|is_pro|is_paid|subscription", col):
         return "a paid plan", "Users can give themselves a paid plan"
@@ -1183,20 +1202,25 @@ def _supabase_deep(root, schema, texts):
     auth_triggers = {fn for table, _, fn, _, _ in schema.triggers if table == "auth.users"}
     # roles copied from sign-up metadata (the person signing up writes raw_user_meta_data)
     for f in schema.functions.values():
-        m = re.search(rf"raw_user_meta_data\s*->>?\s*'({PRIV_KEYS})'", f.body)
+        # a value only compared with fixed choices (case when … = 'seller' then 'seller' else 'buyer' end) can't grant more
+        # than those choices, so it counts only when one of them is an admin-like role
+        reads = re.finditer(rf"raw_user_meta_data\s*->>?\s*'({PRIV_KEYS})'(\s*\)?(?:::\w+)?\s*(?:=|<>|!=|\bin\s*\(|\bwhen\b))?", f.body)
+        risky = re.search(r"'(admin|super_?admin|owner|staff|moderator|root)'", f.body)
+        m = next((m for m in reads if not m[2] or risky), None)
         if m:
+            as_what, gets = SIGNUP[_col_label(m[1])[0]]
             line = _find_line(texts[f.file], f.line, rf"raw_user_meta_data\s*->>?\s*'{m[1]}'")
             target = re.search(r"insert into ([\w.]+)", f.body)
             out.append(build("supabase-privilege-escalation", "", root, f.file, line, None,
                              "Confirmed reachable" if f.name in auth_triggers else "Likely", group=f.name,
-                             fn=f"{f.name}()", key=m[1], target=target[1] if target else "the new user's row",
+                             fn=f"{f.name}()", key=m[1], target=target[1] if target else "the new user's row", as_what=as_what, gets=gets,
                              extra_evidence=[f"{f.name}() runs on every sign-up (trigger on auth.users)"] if f.name in auth_triggers else []))
     privileged_cols = set()
     for t in schema.tables.values():
         for p in t.policies.values():
-            privileged_cols |= {c for c in re.findall(PRIV_KEYS, p.using + p.check)}
+            privileged_cols |= set(re.findall(rf"\b({PRIV_KEYS})\b", p.using + p.check))
     for f in schema.functions.values():
-        privileged_cols |= {c for c in re.findall(rf"\b({PRIV_KEYS})\b", f.body)}
+        privileged_cols |= set(re.findall(rf"\b({PRIV_KEYS})\b", f.body))
     for t in schema.tables.values():
         if t.kind != "table" or not supabase_sql.exposed(t) or not t.rls:
             continue
@@ -1219,7 +1243,7 @@ def _supabase_deep(root, schema, texts):
                 continue
             if p.cmd not in ("update", "all"):
                 continue
-            granted = schema.column_grants.get((t.name, "authenticated"))
+            granted = t.update_cols.get("authenticated")  # None: every column (Supabase's default grant)
             for col in [c for c in cols if re.fullmatch(PRIV_KEYS, c)]:
                 trigger_guard = any(table == t.name and "before" in timing and "update" in timing and fn in schema.functions
                                     and col in schema.functions[fn].body for table, timing, fn, _, _ in schema.triggers)
@@ -1260,7 +1284,8 @@ def _supabase_deep(root, schema, texts):
                 r"auth\.uid\(\)|owner|foldername|has_role|has_any_role|is_admin|auth\.jwt\(\)", expr):
             continue
         anyone = bool(p.roles & {"anon", "public"})
-        buckets = re.findall(r"'([^']+)'", expr)
+        buckets = re.findall(r"bucket_id=\(?'([^']+)'", expr) + [b for group in re.findall(r"bucket_idin\(([^)]*)\)", expr)
+                                                                for b in re.findall(r"'([^']+)'", group)]
         bucket = (f"the {buckets[0]} bucket" if len(buckets) == 1 else f"the {', '.join(buckets[:-1])} and {buckets[-1]} buckets"
                   if buckets else "every bucket")
         if p.cmd in ("update", "delete", "all"):
@@ -1340,7 +1365,7 @@ def _firebase_rules(root, file, text):
                 writes = ops & {"write", "create", "update", "delete"}
                 op_text = "read and write" if writes and ops - writes else "write to" if writes else "read"
                 coll = re.sub(r"/\{[^}]*\}", "", path).strip("/").split("/")[-1] or "data"
-                out.append(build("firebase-open-rules", variant, root, file, line, None, conf, service=service, path=path,
+                out.append(build("firebase-open-rules", variant, root, file, line, None, conf, group=path, service=service, path=path,
                                  ops=op_text, ops_verb="read, change or delete" if writes else "read",
                                  scope=("every file" if storage else "every document") if _root_wide(path) else path,
                                  scope_data="every file in your storage bucket" if storage else "every document in your database",
@@ -1394,7 +1419,7 @@ def _rtdb_rules(root, file, text):
                     continue
                 line = next((n for n, x in enumerate(lines, 1) if f'"{key}"' in x and str(val).lower() in x.lower()), 0)
                 ops = "write to" if key == ".write" else "read"
-                out.append(build("firebase-open-rules", "" if open_ else "signed-in-all", root, file, line, None, "Likely",
+                out.append(build("firebase-open-rules", "" if open_ else "signed-in-all", root, file, line, None, "Likely", group=path,
                                  service="database", path=path, ops=ops, ops_verb="read, change or delete" if key == ".write" else "read",
                                  scope="your whole Realtime Database" if path == "/" else path,
                                  scope_data="everything in your Realtime Database", cond=f'with "{key}": {json.dumps(val)}',
@@ -1503,8 +1528,8 @@ GUARD = re.compile(r"\b(require|assert|ensure|check|verify|guard|protect|with|ge
 
 
 def _auth_checks(root, files, texts):
-    next_app = '"next"' in texts["package.json"]
-    server = [f for f in files if f.endswith(JS) and not TEST_PATH.search(f) and not is_browser_code(f, texts[f], next_app)]
+    stack = _stack(texts)
+    server = [f for f in files if f.endswith(JS) and not TEST_PATH.search(f) and not is_browser_code(f, texts[f], stack)]
     out = []
     issuers = [(f, m) for f in server for m in [TOKEN_ISSUE.search(texts[f])] if m]
     if issuers and not any(TOKEN_CHECK.search(texts[f]) for f in server):
@@ -1563,8 +1588,8 @@ def _where(file, text, offset):
 def _connect(root, findings, files, texts):
     """Link findings that are one story (an env var and the code that reads it; an open table and the browser code that
     queries it), confirm open tables when the app ships what an attacker needs, and add a read-only check command."""
-    next_app = '"next"' in texts["package.json"]
-    browser = [f for f in files if is_browser_code(f, texts[f], next_app)]
+    stack = _stack(texts)
+    browser = [f for f in files if is_browser_code(f, texts[f], stack)]
     env = [f for f in files if ENV_FILE.search(f) and not ENV_EXAMPLE.search(f)]
     url = next(((m[0], _where(f, texts[f], m.start())) for f in env + browser for m in [SUPABASE_URL.search(texts[f])] if m), None)
     key = next((_where(f, texts[f], m.start()) for f in env + browser
@@ -1614,35 +1639,49 @@ def _all(n, noun):
     return f"all {n} {noun}s" if n > 1 else f"your one {noun}"
 
 
-def _passed(findings, files, texts, schema):
-    """What we checked and found right: so a clean result means something (§15)."""
-    hit = {f.raw_rule_id.removeprefix("vibe.").split(":")[0].split("@")[0] for f in findings if f.source == "vibeguard"}
+def _passed(files, texts, schema):
+    """What we checked, so a clean result means something (§15): (text, our rules, CWEs, files) per check, where a
+    finding from one of those rules, or a CWE among those files (any file when None), contradicts it. settle() decides."""
     out = []
     tables = [t for t in schema.tables.values() if t.kind == "table" and supabase_sql.exposed(t) and t.name != "storage.objects"]
-    if tables and "supabase-rls-off" not in hit:
-        out.append(f"Row-Level Security is on for {_all(len(tables), 'table')}, with no wide-open policies")
-    if tables and "supabase-privilege-escalation" not in hit:
-        out.append("Users can't give themselves roles (sign-up metadata, role tables, self-edited role columns)")
+    if tables:
+        out.append((f"Row-Level Security is on for {_all(len(tables), 'table')}, with no wide-open policies", {"supabase-rls-off"}, set(), None))
+        out.append(("Users can't give themselves roles (sign-up metadata, role tables, self-edited role columns)",
+                    {"supabase-privilege-escalation"}, set(), None))
     definers = [f for f in schema.functions.values() if f.definer and f.name.startswith("public.") and "trigger" not in f.returns]
-    if definers and "supabase-rpc-exposed" not in hit:
-        out.append(f"No SECURITY DEFINER function can be run by just anyone ({_all(len(definers), 'function')} checked)")
-    if "storage.objects" in schema.tables and "supabase-storage-open" not in hit:
-        out.append("Storage policies check who owns each file")
+    if definers:
+        out.append((f"No SECURITY DEFINER function can be run by just anyone ({_all(len(definers), 'function')} checked)",
+                    {"supabase-rpc-exposed"}, set(), None))
+    if "storage.objects" in schema.tables:
+        out.append(("Storage policies check who owns each file", {"supabase-storage-open"}, set(), None))
     edge = [f for f in files if re.search(r"supabase/functions/[^/_][^/]*/index\.[jt]s$", f) and ADMIN_CLIENT.search(texts[f])]
-    if edge and "supabase-edge-service-role-no-auth" not in hit:
-        out.append(f"Edge Functions that use the service-role key check who's calling ({_all(len(edge), 'function')} checked)")
-    next_app = '"next"' in texts["package.json"]
-    if any(is_browser_code(f, texts[f], next_app) for f in files) and "frontend-secret" not in hit:
-        out.append("No secret keys in browser code or public env vars")
-    if any(f.endswith(".rules") or f.endswith("database.rules.json") for f in files) and "firebase-open-rules" not in hit:
-        out.append("Firebase rules don't leave data open to everyone")
+    if edge:
+        out.append((f"Edge Functions that use the service-role key check who's calling ({_all(len(edge), 'function')} checked)",
+                    {"supabase-edge-service-role-no-auth"}, set(), None))
+    stack = _stack(texts)
+    browser = {f for f in files if is_browser_code(f, texts[f], stack)}
+    if browser:  # gitleaks may find a key our literal check doesn't know
+        out.append(("No secret keys in browser code or public env vars", {"frontend-secret"}, {"CWE-798"}, browser))
+    if any(f.endswith(".rules") or f.endswith("database.rules.json") for f in files):
+        out.append(("Firebase rules don't leave data open to everyone", {"firebase-open-rules"}, set(), None))
     code = [texts[f] for f in files if f.endswith(JS) and not TEST_PATH.search(f)]
-    if any(re.search(r"\.query\(|\.execute\(|\$queryRaw", t) for t in code) and "sql-string-concat" not in hit:
-        out.append("SQL queries keep values separate from the query text")
-    if any(re.search(r"(?i)webhook", t) and re.search(r"constructEvent|createHmac|svix|unmarshal|validateEvent", t) for t in code) \
-            and not hit & {"stripe-webhook-unsigned", "webhook-unsigned"}:
-        out.append("Payment webhooks verify their signatures")
+    if any(re.search(r"\.query\(|\.execute\(|\$queryRaw", t) for t in code):  # our taint rule reports through semgrep
+        out.append(("SQL queries keep values separate from the query text", {"sql-string-concat"}, {"CWE-89"}, None))
+    if any(re.search(r"(?i)webhook", t) and re.search(r"constructEvent|createHmac|svix|unmarshal|validateEvent", t) for t in code):
+        out.append(("Payment webhooks verify their signatures", {"stripe-webhook-unsigned", "webhook-unsigned"}, set(), None))
     return out
+
+
+def settle(passed, findings):
+    """The texts of the _passed() checks that nothing in the final report contradicts. VibeRules can't decide this alone:
+    our taint rules and the other scanners report through their own steps."""
+    live = [f for f in findings if not f.is_false_positive]
+    ours = {f.raw_rule_id.removeprefix("vibe.").split(":")[0].split("@")[0] for f in live if f.raw_rule_id.startswith("vibe.")}
+
+    def broken(rules, cwes, where):
+        return bool(rules & ours) or any(cwes & set(f.cwe) and f.severity != "Low" and (where is None or f.file in where) for f in live)
+
+    return [text for text, *against in passed if not broken(*against)]
 
 
 # --- Vue v-html / Svelte {@html} ------------------------------------------------------------------------------

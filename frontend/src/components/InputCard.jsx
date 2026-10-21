@@ -154,7 +154,7 @@ export default function InputCard({ onSubmit }) {
           {error && <p role="alert" className="mt-3 text-sm text-crit">{error}</p>}
 
           <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-            <p className="text-sm text-faint">Read-only. Nothing is stored after the scan.</p>
+            <p className="text-sm text-faint">Read-only. We keep the report, not your code.</p>
             <button
               type="submit"
               disabled={!ready || busy}

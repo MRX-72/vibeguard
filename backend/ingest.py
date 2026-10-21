@@ -97,9 +97,12 @@ def _check_zip(infos):
 def _clone(url, root):
     env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "true", "GIT_CONFIG_NOSYSTEM": "1"}
     # ponytail: size is checked after cloning, bounded only by the timeout; use the GitHub API size field if huge repos bite
+    # core.symlinks=false: a committed symlink (src/config.js -> /proc/self/environ) becomes a small text file holding
+    # the link's target, so no scanner (or snippet in the report) ever reads a file on this server
     try:
         r = subprocess.run(
-            ["git", "-c", "credential.helper=", "clone", "--depth", "1", "--single-branch", "--no-tags", "-q", "--", url, str(root)],
+            ["git", "-c", "credential.helper=", "-c", "core.symlinks=false", "clone", "--depth", "1", "--single-branch", "--no-tags",
+             "-q", "--", url, str(root)],
             env=env, capture_output=True, text=True, timeout=90,
         )
     except subprocess.TimeoutExpired:

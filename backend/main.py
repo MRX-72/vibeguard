@@ -15,6 +15,9 @@ import pipeline
 import scoring
 from models import SEVERITIES, Finding
 
+MAX_WAITING = 8
+
+
 @asynccontextmanager
 async def lifespan(app):
     db.init()
@@ -38,6 +41,9 @@ def health():
 async def create_scan(request: Request, background: BackgroundTasks):
     if int(request.headers.get("content-length") or 0) > ingest.MAX_BYTES + 1024 * 1024:
         raise HTTPException(413, "Uploads are limited to 50 MB.")
+    # ponytail: one global cap; per-IP limits if one visitor starts hogging the queue
+    if db.active_scans() >= MAX_WAITING:  # scans run one at a time, and each waiting upload sits on disk
+        raise HTTPException(429, "Too many scans are waiting right now. Try again in a few minutes.")
     form = await request.form(max_files=1, max_fields=5)
     source_type = form.get("source_type")
     payload = form.get("payload")

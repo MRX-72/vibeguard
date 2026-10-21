@@ -76,6 +76,37 @@ def test_cleanup_on_error():
     assert not sandbox_dir.exists()
 
 
+def test_clone_never_follows_symlinks():
+    """A repo can commit a symlink to a server file (/proc/self/environ); the clone must hold the link's text, not the file."""
+    import subprocess
+    outside = Path(tempfile.mkdtemp()) / "server-secret.txt"
+    outside.write_text("GROQ_API_KEY=gsk_not_for_the_report\n")
+    repo = Path(tempfile.mkdtemp())
+    (repo / "src").mkdir()
+    (repo / "src/config.js").symlink_to(outside)
+    git = ["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t"]
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(git + ["add", "."], check=True)
+    subprocess.run(git + ["commit", "-qm", "x"], check=True)
+    root = Path(tempfile.mkdtemp()) / "src"
+    ingest._clone(f"file://{repo}", root)
+    link = root / "src/config.js"
+    assert not link.is_symlink() and "gsk_" not in link.read_text() and link.read_text() == str(outside)
+
+
+def test_restart_fails_unfinished_scans():
+    import db
+    old, db.DB_PATH = db.DB_PATH, str(Path(tempfile.mkdtemp()) / "t.db")
+    try:
+        db.init()
+        db.create_scan("s1", "demo", "Demo app", [])
+        db.update_scan("s1", status="running")
+        db.init()  # what a restart runs
+        assert db.get_scan("s1")["status"] == "failed" and "restarted" in db.get_scan("s1")["error"]
+    finally:
+        db.DB_PATH = old
+
+
 def test_paste_names():
     assert ingest.validate("paste", "x", "../../etc/passwd")[1] == "etc/passwd"
     assert ingest.validate("paste", "def f():\n  pass")[1] == "pasted.py"
@@ -623,10 +654,12 @@ def test_rate_limit_and_client_code_negatives():
     _, found = _vibe({"package.json": '{"dependencies": {"express-rate-limit": "7"}}',
                       "server/routes/auth.js": 'router.post("/login", (req, res) => res.json({}))\n'})
     assert not [f for f in found if "rate-limit" in f.raw_rule_id]
-    assert is_browser_code("src/App.tsx", "", next_app=False) and not is_browser_code("src/routes/api.server.ts", "", False)
-    assert not is_browser_code("app/page.tsx", "export default function P() {}", next_app=True)
-    assert is_browser_code("app/page.tsx", '"use client"\nexport default function P() {}', next_app=True)
-    assert not is_browser_code("src/lib/fns.ts", "export const f = createServerFn().handler(() => 1)", next_app=False)
+    assert is_browser_code("src/App.tsx", "", "") and not is_browser_code("src/routes/api.server.ts", "", "")
+    assert not is_browser_code("app/page.tsx", "export default function P() {}", "next")
+    assert is_browser_code("app/page.tsx", '"use client"\nexport default function P() {}', "next")
+    assert not is_browser_code("src/lib/fns.ts", "export const f = createServerFn().handler(() => 1)", "")
+    # a Node API with no frontend framework: its src/ is server code, only public/ reaches browsers
+    assert not is_browser_code("src/middleware/auth.js", "", "backend") and is_browser_code("public/app.js", "", "backend")
 
 
 def test_missing_auth_and_passed_checks():
@@ -650,7 +683,7 @@ def test_missing_auth_and_passed_checks():
     _, found = _vibe(api | {"server/middleware.js": "module.exports = (req, res, next) => { req.user = jwt.verify(req.headers.authorization, process.env.S); next() }\n"})
     assert not [f for f in found if f.raw_rule_id == "vibe.missing-auth"]
     # a clean Supabase project says what it checked
-    from scanners.custom_rules import VibeRules
+    from scanners.custom_rules import VibeRules, settle
     root = Path(tempfile.mkdtemp())
     (root / "supabase/migrations").mkdir(parents=True)
     (root / "supabase/migrations/001.sql").write_text(
@@ -660,8 +693,59 @@ def test_missing_auth_and_passed_checks():
     (root / "src/App.tsx").write_text("export const App = () => <p>hi</p>\n")
     v = VibeRules()
     assert v.run(root, Path(tempfile.mkdtemp())) == []
-    assert "Row-Level Security is on for your one table, with no wide-open policies" in v.passed
-    assert "No secret keys in browser code or public env vars" in v.passed
+    passed = settle(v.passed, [])
+    assert "Row-Level Security is on for your one table, with no wide-open policies" in passed
+    assert "No secret keys in browser code or public env vars" in passed
+    # findings from other steps take a check back: a secret gitleaks found in browser code, a SQL injection from taint analysis
+    leak = Finding(source="gitleaks", severity="High", title="k", file="src/App.tsx", line=1, kind="secret", cwe=["CWE-798"])
+    firebase = Finding(source="gitleaks", severity="Low", title="k", file="src/App.tsx", line=1, kind="secret", cwe=["CWE-798"])
+    assert "No secret keys in browser code or public env vars" not in settle(v.passed, [leak])
+    assert "No secret keys in browser code or public env vars" in settle(v.passed, [firebase])  # Low: public by design
+    (root / "server.js").write_text('db.query("select 1")\n')
+    v.run(root, Path(tempfile.mkdtemp()))
+    sqli = Finding(source="vibeguard", severity="Critical", title="s", raw_rule_id="vibe.sql-string-concat", file="server.js", line=1)
+    assert "SQL queries keep values separate from the query text" in settle(v.passed, [])
+    assert "SQL queries keep values separate from the query text" not in settle(v.passed, [sqli])
+
+
+def test_false_positive_guards():
+    """Lookalikes of real bugs stay quiet, and findings describe what the code really does."""
+    import shutil
+    if not (shutil.which("ast-grep") and shutil.which("semgrep")):
+        return print("   (ast-grep or semgrep not installed, skipped)")
+    _, found = _vibe({
+        "server/a.js": ('const cp = require("child_process")\napp.get("/a", (req, res) => {\n  const m = /^(\\d+)$/.exec(req.query.id)\n'
+                        '  cp.exec("ls " + req.query.dir)\n  res.json(m)\n})\n'),
+        "server/b.js": ('app.get("/b", (req, res) => {\n  this.db.exec("DELETE FROM t WHERE id = " + req.query.id)\n'
+                        '  require("child_process").exec("ls " + req.query.dir)\n})\n'),
+        "server/hook.js": ('app.post("/webhook", (req, res) => {\n'
+                           '  const sig = crypto.createHmac("sha256", process.env.SECRET).update(req.body).digest("hex")\n})\n'),
+        "supabase/migrations/1.sql": (
+            "create function public.handle_new_user() returns trigger language plpgsql security definer as $$ begin\n"
+            "  insert into public.profiles (id, role) values (new.id,\n"
+            "    case when new.raw_user_meta_data->>'role' = 'seller' then 'seller' else 'buyer' end);\n  return new; end $$;\n"
+            "create trigger t after insert on auth.users for each row execute function public.handle_new_user();\n"
+            "create function public.seed_wallet() returns trigger language plpgsql security definer as $$ begin\n"
+            "  insert into public.wallets (id, credits) values (new.id, (new.raw_user_meta_data->>'credits')::int);\n  return new; end $$;\n"
+            "create policy up on storage.objects for update to anon using (bucket_id = 'avatars' and storage.extension(name) = 'jpg');\n")})
+    got = sorted((f.file, f.line, f.raw_rule_id.split("@")[0]) for f in found)
+    assert got == [("server/a.js", 4, "vibe.eval-user-input:command"),  # RegExp.exec is neither SQL nor a shell; cp.exec isn't SQL
+                   ("server/b.js", 2, "vibe.sql-string-concat"), ("server/b.js", 2, "vibe.sql-string-concat:pattern"),
+                   ("server/b.js", 3, "vibe.eval-user-input:command"),
+                   ("supabase/migrations/1.sql", 7, "vibe.supabase-privilege-escalation"),  # buyer/seller choice is fine; credits aren't
+                   ("supabase/migrations/1.sql", 9, "vibe.supabase-storage-open")], got  # the HMAC of the body isn't mass assignment
+    titles = {f.title for f in found}
+    assert {"Anyone can sign up with any number of credits", "Anyone can overwrite or delete files in the avatars bucket"} <= titles
+    # a Python-only project still gets its structural rules (ast-grep used to run only when there was JS/TS)
+    from scanners.custom_rules import VibeRules
+    root = Path(tempfile.mkdtemp())
+    (root / "main.py").write_text('app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True)\n')
+    assert [f.raw_rule_id for f in VibeRules().run(root, Path(tempfile.mkdtemp()))] == ["vibe.cors-wildcard:python-credentials"]
+    # two open collections are two cards, each titled with its own collection
+    (root / "firestore.rules").write_text("service cloud.firestore {\n  match /databases/{database}/documents {\n"
+                                          "    match /users/{id} { allow read: if true; }\n    match /messages/{id} { allow read: if true; }\n  }\n}\n")
+    cards = normalize.normalize(VibeRules().run(root, Path(tempfile.mkdtemp())))
+    assert {f.title for f in cards if f.file == "firestore.rules"} == {"Anyone can read users in Firebase", "Anyone can read messages in Firebase"}
 
 
 def test_supabase_sql_reader():
@@ -682,6 +766,17 @@ def test_supabase_sql_reader():
                             "security definer as $$ begin delete from x where id = target; end $$;\n"
                             "revoke execute on function public.f(uuid, text) from public, anon;\n")]).functions
     assert fns["public.f"].args == "uuid, text" and fns["public.f"].definer and fns["public.f"].revoked == {"public", "anon"}
+    t = q.read([("g.sql", "create table a (id int, name text, role text);\ngrant update (name) on a to authenticated;\n"
+                          "create table b (id int, name text, role text);\nrevoke update on b from authenticated;\n"
+                          "grant update (name) on b to authenticated;\n"
+                          "create table c (id int);\nrevoke update, delete on c from anon, authenticated;\n"
+                          "create table d (id int);\nrevoke all on d from public, authenticated;\n"
+                          "create table e (id int, status text);\nalter table e enable row level security;\n"
+                          "create policy p on e for update using (status = 'up to date' or true);\n")]).tables
+    assert t["public.a"].update_cols == {}  # a column grant alone narrows nothing: authenticated can still update every column
+    assert t["public.b"].update_cols == {"authenticated": {"name"}}
+    assert q.exposed(t["public.c"]) and q.exposed(t["public.d"])  # still readable; anon keeps its direct grant
+    assert t["public.e"].policies["p"].roles == {"public"}  # "to" inside the USING expression isn't a TO clause
 
 
 def test_zizmor_bandit_lockfile_lint():

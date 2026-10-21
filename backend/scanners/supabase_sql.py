@@ -36,7 +36,8 @@ class Table:
     rls: bool = False
     toggled: tuple = ()  # (file, line) of the last enable/disable
     invoker: bool = False  # views: security_invoker = true
-    revoked: set = field(default_factory=set)  # roles whose access was revoked
+    revoked: set = field(default_factory=set)  # roles that lost all access (REVOKE ALL, or every one of select/insert/update/delete)
+    update_cols: dict = field(default_factory=dict)  # role -> columns it may still UPDATE, once table-level UPDATE was revoked
     columns: str = ""
     policies: dict = field(default_factory=dict)
 
@@ -59,7 +60,6 @@ class Schema:
     functions: dict = field(default_factory=dict)  # qualified name -> Function (overloads collapse: the last one wins)
     triggers: list = field(default_factory=list)  # (table, timing+events, function, file, line)
     buckets: dict = field(default_factory=dict)  # id -> {"public": bool, "file": , "line": }
-    column_grants: dict = field(default_factory=dict)  # (table, role) -> set of columns the role may UPDATE, when limited
 
 
 def statements(text):
@@ -174,7 +174,7 @@ def read(files):
                 schema.functions.pop(_name(m[1]), None)
             elif m := re.match(rf"(revoke|grant) (?:execute|all)(?: privileges)? on function ({IDENT}).*? (from|to) (.+)$", s, re.I):
                 if f := schema.functions.get(_name(m[2])):
-                    roles = {r.strip().strip('"').lower() for r in m[4].split(",")}
+                    roles = _roles(m[4])
                     f.revoked = f.revoked | roles if m[1].lower() == "revoke" else f.revoked - roles
             elif m := re.match(rf"create (?:or replace )?(?:constraint )?trigger \S+ (before|after|instead of) (.+?) on ({IDENT}) .*?execute (?:function|procedure) ({IDENT})", s, re.I):
                 schema.triggers.append((_name(m[3]), f"{m[1]} {m[2]}".lower(), _name(m[4]), file, line))
@@ -185,35 +185,56 @@ def read(files):
                 if "id" in row:
                     schema.buckets[row["id"].strip("'")] = {"public": row.get("public", "false").lower() == "true", "file": file, "line": line}
             elif m := re.match(rf"grant update \(([^)]*)\) on (?:table )?({IDENT}) to (.+)$", s, re.I):
-                for role in m[3].split(","):
-                    schema.column_grants[(_name(m[2]), role.strip().strip('"').lower())] = {c.strip().strip('"').lower() for c in m[1].split(",")}
+                # a column grant only narrows UPDATE after a table-level REVOKE: Supabase grants every column by default
+                if t := tables.get(_name(m[2])):
+                    for role in _roles(m[3]) & set(t.update_cols):
+                        t.update_cols[role] |= {c.strip().strip('"').lower() for c in m[1].split(",")}
             elif m := re.match(rf'create policy ("[^"]+"|\S+) on ({IDENT})(.*)$', s, re.I):
                 if _name(m[2]) == "storage.objects" and "storage.objects" not in tables:
                     tables["storage.objects"] = Table("storage.objects", file, line, rls=True)
                 if t := tables.get(_name(m[2])):
                     rest = m[3]
-                    cmd = re.search(r"\bfor (all|select|insert|update|delete)\b", rest, re.I)
-                    to = re.search(r"\bto ((?:\"?[\w]+\"?\s*,\s*)*\"?[\w]+\"?)", rest, re.I)
-                    roles = {r.strip().strip('"').lower() for r in to[1].split(",")} if to else {"public"}
+                    head = re.split(r"\b(?:using|with check)\b", rest, maxsplit=1, flags=re.I)[0]  # FOR and TO come before the expressions
+                    cmd = re.search(r"\bfor (all|select|insert|update|delete)\b", head, re.I)
+                    to = re.search(r"\bto ((?:\"?[\w]+\"?\s*,\s*)*\"?[\w]+\"?)", head, re.I)
+                    roles = _roles(to[1]) if to else {"public"}
                     t.policies[m[1].strip('"')] = Policy(
                         m[1].strip('"'), cmd[1].lower() if cmd else "all", roles, _expr("using", rest), _expr("with check", rest),
                         not re.search(r"\bas restrictive\b", rest, re.I), file, line)
             elif m := re.match(rf'drop policy (?:if exists )?("[^"]+"|\S+) on ({IDENT})', s, re.I):
                 if t := tables.get(_name(m[2])):
                     t.policies.pop(m[1].strip('"'), None)
-            elif m := re.match(rf"grant .+? on (?:table )?({IDENT}(?:\s*,\s*{IDENT})*) to (.+)$", s, re.I):
-                for raw in m[1].split(","):
+            elif m := re.match(rf"grant (.+?) on (?:table )?({IDENT}(?:\s*,\s*{IDENT})*) to (.+)$", s, re.I):
+                privs, roles = _privileges(m[1]), _roles(m[3])
+                for raw in m[2].split(","):
                     if t := tables.get(_name(raw.strip())):
-                        t.revoked -= {r.strip().strip('"').lower() for r in m[2].split(",")}
+                        t.revoked -= roles
+                        if privs & {"all", "update"}:
+                            for role in roles:
+                                t.update_cols.pop(role, None)
             elif re.search(r"\benable row level security\b", low) and t_names(s, tables):
                 # dynamic: DO $$ FOREACH t IN ARRAY ['a','b'] LOOP EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY', t)
                 for name in t_names(s, tables):
                     tables[name].rls, tables[name].toggled = True, (file, line)
-            elif m := re.match(rf"revoke .+? on (?:table )?({IDENT}(?:\s*,\s*{IDENT})*) from (.+)$", s, re.I):
-                for raw in m[1].split(","):
+            elif m := re.match(rf"revoke (.+?) on (?:table )?({IDENT}(?:\s*,\s*{IDENT})*) from (.+)$", s, re.I):
+                privs, roles = _privileges(m[1]), _roles(m[3])
+                for raw in m[2].split(","):
                     if t := tables.get(_name(raw.strip())):
-                        t.revoked |= {r.strip().strip('"').lower() for r in m[2].split(",")}
+                        if "all" in privs or {"select", "insert", "update", "delete"} <= privs:
+                            t.revoked |= roles
+                        if privs & {"all", "update"}:  # Postgres drops the role's column-level UPDATE grants too
+                            t.update_cols |= {role: set() for role in roles}
     return schema
+
+
+def _roles(text):
+    return {r.strip().strip('"').lower() for r in text.split(",")}
+
+
+def _privileges(text):
+    """'select, update' / 'all privileges' / 'update (name)' -> {'select', 'update'} / {'all'} / {'update_columns'}."""
+    text = re.sub(r"\bupdate\s*\([^)]*\)", "update_columns", text, flags=re.I)  # column-level, not the whole table
+    return {w.split()[0].lower() for w in re.sub(r"\([^)]*\)", "", text).split(",") if w.strip()}
 
 
 def _arg_types(args):
@@ -235,8 +256,9 @@ def t_names(stmt, tables):
 
 
 def exposed(t):
-    """Reachable through the Data API by browsers: public schema, not revoked from both anon and authenticated."""
-    return t.name.split(".")[0] in EXPOSED_SCHEMAS and not ({"anon", "authenticated"} <= t.revoked or "public" in t.revoked and "authenticated" in t.revoked)
+    """Reachable through the Data API by browsers: public schema, and anon or authenticated still has access. Supabase
+    grants both roles directly, so revoking from PUBLIC alone changes nothing."""
+    return t.name.split(".")[0] in EXPOSED_SCHEMAS and not {"anon", "authenticated"} <= t.revoked
 
 
 def who(policy):
