@@ -69,6 +69,8 @@ SECRET_IMPACT = "Anyone who can see this code (or your site's JavaScript) can us
 
 def normalize(findings: list[Finding]) -> list[Finding]:
     secrets = {f._secret for f in findings if f._secret and len(f._secret) >= 8}
+    # credentials only a SAST rule spotted (jwt.sign(p, "supersecret123")) are masked in *every* finding that shows that line
+    secrets |= {lit for f in findings if f.kind != "dependency" and SECRET_CWES & set(f.cwe) for lit in _flagged_literals(f)}
     merged: list[Finding] = []
     for f in sorted(findings, key=_rank):
         f.detected_by = f.detected_by or [f.source]
@@ -159,11 +161,21 @@ def _absorb(keep: Finding, other: Finding):
         keep._secret = other._secret
 
 
+SECRET_CWES = {"CWE-259", "CWE-321", "CWE-798"}
+
+
+def _flagged_literals(f):
+    lines = f.code_snippet.splitlines()
+    start = f.snippet_start or f.line
+    flagged = lines[max(f.line - start, 0) : (f.end_line or f.line) - start + 1]
+    return {m[2] for line in flagged for m in re.finditer(r"""(["'`])([^"'`\s./]{8,})\1""", line) if _secretish(m[2])}
+
+
 def _mask(f, secrets):
     def clean(text):
         for s in secrets:
             text = mask_in(text, s)
-        if f.kind != "dependency" and {"CWE-259", "CWE-321", "CWE-798"} & set(f.cwe):
+        if f.kind != "dependency" and SECRET_CWES & set(f.cwe):
             # hardcoded credentials that no secret scanner caught (e.g. jwt.sign(p, "supersecret123"))
             text = re.sub(r"""(["'`])([^"'`\s./]{8,})\1""", lambda m: m[1] + (mask(m[2]) if _secretish(m[2]) else m[2]) + m[1], text)
         return text

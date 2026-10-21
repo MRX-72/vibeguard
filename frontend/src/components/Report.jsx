@@ -7,6 +7,7 @@ export default function Report({ report }) {
   const shown = findings.filter((f) => !f.is_false_positive)
   const noise = findings.filter((f) => f.is_false_positive)
   const unchecked = (scan.steps ?? []).filter((s) => s.state === 'skipped' || s.state === 'failed')
+  const passed = (scan.steps ?? []).flatMap((s) => s.passed ?? [])
   const counts = Object.fromEntries(ORDER.map((s) => [s, shown.filter((f) => f.severity === s).length]))
   const score = useCountUp(scan.risk_score ?? 0)
 
@@ -36,10 +37,27 @@ export default function Report({ report }) {
 
       <section className="pt-10">
         <h2 className="text-lg font-semibold tracking-tight">Findings</h2>
+        {shown.length === 0 && <p className="mt-4 text-muted">No issues found in what we checked.</p>}
         <ul className="mt-4 flex flex-col gap-2">
           {shown.map((f, i) => <FindingRow key={f.id} finding={f} index={i} />)}
         </ul>
       </section>
+
+      {passed.length > 0 && (
+        <section className="pt-10">
+          <h2 className="text-lg font-semibold tracking-tight">Already right</h2>
+          <ul className="mt-4 flex flex-col gap-2.5">
+            {passed.map((p) => (
+              <li key={p} className="flex items-start gap-3 text-[15px] leading-snug text-muted">
+                <svg viewBox="0 0 16 16" className="mt-0.5 size-4 shrink-0 text-fix" aria-hidden="true">
+                  <path d="m3.5 8.3 2.9 2.9 6.1-6.3" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                {p}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       {noise.length > 0 && (
         <details className="mt-8">

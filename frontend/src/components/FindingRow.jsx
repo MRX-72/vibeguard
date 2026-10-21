@@ -82,7 +82,7 @@ function Code({ label, code, diff, start, from, to }) {
   const numbered = start > 0
   return (
     <figure>
-      <figcaption className="mb-2 font-mono text-[12.5px] text-faint">{label}</figcaption>
+      <figcaption className="mb-2 font-mono text-[12.5px] break-all text-faint">{label}</figcaption>
       <pre className="overflow-x-auto rounded-md border border-line bg-ink py-3 font-mono text-[12.5px] leading-relaxed">
         {code.split('\n').map((line, i) => {
           const n = start + i

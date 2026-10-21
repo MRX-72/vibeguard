@@ -1,0 +1,17 @@
+id: ai-open-proxy-messages
+language: tsx
+severity: warning
+message: The caller writes the whole AI conversation
+rule:
+  any:
+    - {kind: pair, regex: '^messages\s*:\s*((req|request)\.body\.messages|body\.messages|input\.messages)\b'}
+    - kind: shorthand_property_identifier
+      regex: '^messages$'
+      inside: {kind: program, regex: 'await\s+(req|request)\.json\(\)|(req|request)\.body', stopBy: end}
+  inside:
+    kind: call_expression
+    regex: '(chat\.completions\.create|responses\.create|messages\.create|streamText|generateText|generateObject|streamObject)\s*\('
+    stopBy: end
+  not:
+    inside: {kind: program, regex: 'role\s*:\s*["''`]system|\bsystem\s*:', stopBy: end}
+metadata: {vibe: ai-open-proxy, variant: messages, confidence: Likely}

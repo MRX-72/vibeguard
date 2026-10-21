@@ -116,8 +116,7 @@ CATALOG = {
         impact="Attackers can try passwords and one-time codes as fast as your server answers.",
         reason="Brute force needs no skill, only time, and nothing here slows it down.",
         explanation="{method} {path} has no rate limit, and nothing else in the project limits requests.",
-        fix="+ import rateLimit from \"express-rate-limit\"\n+ const authLimit = rateLimit({ windowMs: 15 * 60 * 1000, limit: 10 })\n"
-            "- router.post(\"/login\", async (req, res) => {\n+ router.post(\"/login\", authLimit, async (req, res) => {",
+        fix="{fix_text}",
         reprompt="Add rate limiting to every login, sign-up, password-reset and one-time-code endpoint (for Express, "
                  "express-rate-limit with about 10 attempts per 15 minutes per IP), and return 429 when it's exceeded.",
         refs=["https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html#protect-against-automated-attacks"],
@@ -184,6 +183,130 @@ CATALOG = {
         reprompt="In {file}, replace supabase.auth.getSession() with supabase.auth.getUser() for every server-side auth decision, "
                  "and use the returned user (not session.user) to decide what the caller may do.",
         refs=["https://supabase.com/docs/reference/javascript/auth-getsession"],
+    ),
+    "supabase-privilege-escalation": dict(
+        severity="Critical", kind="config", cwe=["CWE-269"],
+        title="Anyone can sign up as an admin",
+        impact="Anyone can create an account with admin rights and use everything an admin can.",
+        reason="It takes one sign-up call with an extra field, and it unlocks everything admins can do.",
+        explanation="{fn} copies {key} from the new user's sign-up metadata into {target}. The person signing up chooses that "
+                    "metadata (supabase.auth.signUp({ options: { data: { {key}: ... } } })), so they can pick their own role.",
+        fix="- {line_text}\n+ -- never take roles from sign-up data: give everyone the lowest role, and promote admins by hand\n"
+            "+ insert into public.profiles (id, email) values (new.id, new.email);",
+        reprompt="In the {fn} function, stop reading {key} from raw_user_meta_data: new users should always get the default "
+                 "(lowest) role. Grant admin rights only from the database (an admin-only policy or the Supabase dashboard).",
+        refs=["https://supabase.com/docs/guides/database/postgres/custom-claims-and-role-based-access-control-rbac",
+              "https://supabase.com/docs/guides/auth/managing-user-data#accessing-user-metadata"],
+    ),
+    "supabase-rpc-exposed": dict(
+        severity="High", kind="config", cwe=["CWE-306"],
+        title="{audience_cap} can run {fn} through your API",
+        impact="{audience_cap} can call {fn} with any arguments, and it runs with full database rights.",
+        reason="SECURITY DEFINER skips Row-Level Security, and Supabase serves every public function at /rest/v1/rpc.",
+        explanation="{fn} runs as SECURITY DEFINER, so it ignores Row-Level Security, and Supabase exposes every function in the "
+                    "public schema at /rest/v1/rpc/{short}. Nothing in it checks who's calling, so {audience} can call it with "
+                    "supabase.rpc(\"{short}\", …). {revoke_note}",
+        fix="+ -- only your server or a cron job should run it:\n+ revoke execute on function {fn} from public, anon, authenticated;\n"
+            "+ -- or, if users call it, check them first inside the function:\n+ if (select auth.uid()) is null then raise exception 'not allowed'; end if;",
+        reprompt="For the Postgres function {fn}: if only the server or a scheduled job runs it, revoke EXECUTE from public, "
+                 "anon and authenticated in a new migration. If app users call it, add a check at the top that the caller "
+                 "(auth.uid()) is allowed to act on the rows it touches, or make it SECURITY INVOKER so Row-Level Security applies.",
+        refs=["https://supabase.com/docs/guides/database/functions#security-definer-vs-invoker",
+              "https://supabase.com/docs/guides/database/database-linter?lint=0028_anon_security_definer_function_executable"],
+    ),
+    "supabase-storage-open": dict(
+        severity="Critical", kind="config", cwe=["CWE-732"],
+        title="{audience_cap} can overwrite or delete files in {bucket}",
+        impact="{audience_cap} can replace or delete files that belong to other users.",
+        reason="Storage policies are the only thing between the internet and your files.",
+        explanation="Storage policy \"{policy}\" ({file}:{line}) lets {audience} {cmd_text} in {bucket} and only checks the bucket "
+                    "name, not who owns the file.",
+        fix="- {using_text}\n+ bucket_id = '{bucket_id}' and (select auth.uid())::text = (storage.foldername(name))[1]",
+        reprompt="Rewrite the storage policies for {bucket} so users can only touch files in their own folder: check "
+                 "(storage.foldername(name))[1] = auth.uid()::text, and upload each user's files under their user id.",
+        refs=["https://supabase.com/docs/guides/storage/security/access-control"],
+    ),
+    "plaintext-password": dict(
+        severity="High", kind="code", cwe=["CWE-256"],
+        title="Passwords are stored in plain text",
+        impact="Anyone who gets a copy of your database (a leak, a backup, an open table) can log in as every user, and try "
+               "the same passwords on their email and bank accounts.",
+        reason="One database leak exposes every user's password, everywhere they reused it.",
+        explanation="{file}:{line} compares the password someone typed with the stored one directly, which only works if "
+                    "passwords are saved as-is. They should be stored as slow, salted hashes (bcrypt or argon2) and checked "
+                    "with the library's compare function.",
+        fix="- {line_text}\n+ {line_fix}",
+        reprompt="In {file}, store passwords only as bcrypt (or argon2) hashes: hash on sign-up and password change with "
+                 "bcrypt.hash(password, 12), and check logins with bcrypt.compare(). Migrate existing users by asking them to reset "
+                 "their password. Or let Supabase Auth handle passwords entirely.",
+        refs=["https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html"],
+    ),
+    "jwt-no-expiry": dict(
+        severity="Medium", kind="code", cwe=["CWE-613"],
+        title="Login tokens never expire",
+        impact="A token that leaks once (a shared screenshot, a log, a stolen laptop) works forever, and you can't log anyone out.",
+        reason="It doesn't open anything by itself, but it turns every token leak into permanent access.",
+        explanation="{file}:{line} signs a login token with no expiry (no expiresIn and no exp claim), so it stays valid until "
+                    "you change the signing secret for everyone.",
+        fix="- {line_text}\n+ {line_fix}",
+        reprompt="In {file}, give every login token a short lifetime (jwt.sign(payload, secret, { expiresIn: \"1h\" })) and add "
+                 "refresh tokens if users need to stay logged in longer.",
+        refs=["https://cheatsheetseries.owasp.org/cheatsheets/JSON_Web_Token_for_Java_Cheat_Sheet.html#token-explicit-revocation-by-the-user"],
+    ),
+    "mass-assignment": dict(
+        severity="High", kind="code", cwe=["CWE-915"],
+        title="The whole request body is saved to the database",
+        impact="Users can set any column they like on the row, such as is_admin, plan or another user's id.",
+        reason="It needs only one extra field in a request the app already sends.",
+        explanation="{file}:{line} passes the request body straight into a database write, so every field the caller sends is "
+                    "saved, including ones your form never shows.",
+        fix="- {line_text}\n+ const { display_name, bio } = req.body   // only the fields users may change\n"
+            "+ … .update({ display_name, bio })",
+        reprompt="In {file}, never pass req.body (or the parsed request) directly to insert/update/create. Pick the allowed "
+                 "fields explicitly, validate them (for example with zod), and set ownership fields like user_id from the session.",
+        refs=["https://cheatsheetseries.owasp.org/cheatsheets/Mass_Assignment_Cheat_Sheet.html"],
+    ),
+    "ai-open-proxy": dict(
+        severity="Medium", kind="code", cwe=["CWE-284"], money_risk=True,
+        title="Anyone can use your AI endpoint as a free chatbot",
+        impact="Anyone can use your AI key for whatever they want (their own apps, spam, jailbreaks) and you get the bill.",
+        reason="It's direct cost exposure, and abuse of AI endpoints is common and automated.",
+        explanation="{file}:{line} sends the conversation exactly as the caller wrote it, with no system prompt of your own, so "
+                    "the endpoint answers anything, not just what your feature is for.",
+        fix="- messages: req.body.messages,\n+ messages: [\n+   { role: \"system\", content: \"You help with <your feature> only. Refuse anything else.\" },\n"
+            "+   { role: \"user\", content: String(req.body.text).slice(0, 4000) },\n+ ],",
+        reprompt="In {file}, build the AI request on the server: your own system prompt, only the user's text (with a length "
+                 "limit), a fixed model and max_tokens. Don't accept whole message arrays or model names from the browser, and "
+                 "require sign-in plus a per-user rate limit.",
+        refs=["https://genai.owasp.org/llmrisk/llm102025-unbounded-consumption/"],
+    ),
+    "webhook-unsigned": dict(
+        severity="High", kind="code", cwe=["CWE-345"], money_risk=True,
+        title="{provider} webhook handled without checking its signature",
+        impact="Anyone can send a fake \"{event}\" event and your app will act on it.",
+        reason="Webhook URLs are easy to guess, and the app trusts whatever arrives.",
+        explanation="This code handles {provider}'s \"{event}\" event, but nothing in the file verifies the request's signature "
+                    "with your webhook secret. Anyone can POST that event to the endpoint.",
+        fix="+ // verify before trusting: {verify_hint}\n+ if (!valid) return res.status(400).send(\"bad signature\")",
+        reprompt="In {file}, verify every {provider} webhook signature with your webhook secret (from the environment) before "
+                 "handling the event, using {provider}'s official SDK or HMAC check on the raw request body, and reject anything "
+                 "that doesn't match.",
+        refs=["{doc}"],
+    ),
+    "missing-auth": dict(
+        severity="High", kind="code", cwe=["CWE-306"],
+        title="Your API hands out login tokens but never checks them",
+        impact="Every endpoint answers anyone. Logging in changes nothing: the data and actions are open without it.",
+        reason="It's the same as having no login at all, for every route at once.",
+        explanation="{file}:{line} creates login tokens, but nothing in your server code ever verifies one (no jwt.verify(), "
+                    "no auth middleware), so none of your routes know who's calling.",
+        fix="+ function requireUser(req, res, next) {\n+   try {\n+     req.user = jwt.verify(req.headers.authorization?.replace(\"Bearer \", \"\"), process.env.JWT_SECRET)\n"
+            "+     next()\n+   } catch {\n+     res.status(401).json({ error: \"Sign in first\" })\n+   }\n+ }\n"
+            "+ app.use(\"/api/users\", requireUser, require(\"./routes/users\"))   // and every other private route",
+        reprompt="Add an auth middleware that verifies the login token (jwt.verify with the secret from the environment) and "
+                 "puts the user on req.user, apply it to every route except login and sign-up, and use req.user.id (never an id "
+                 "from the URL or body) to decide whose data a request can touch.",
+        refs=["https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html"],
     ),
     "stripe-webhook-unsigned": dict(
         severity="High", kind="code", cwe=["CWE-345"], money_risk=True,
@@ -337,8 +460,6 @@ VARIANTS = {
         impact="Anyone can call these endpoints in a loop and run up your AI bill or burn your credits.",
         reason="Each call costs you money, and nothing stops a script from calling them thousands of times.",
         explanation="{method} {path} calls a paid AI API, and nothing limits how often it can be called.",
-        fix="+ // before calling the AI API: allow each user a few calls per minute\n+ const { success } = await ratelimit.limit(userId)   // e.g. @upstash/ratelimit\n"
-            "+ if (!success) return new Response(\"Too many requests\", { status: 429 })",
         reprompt="Add a per-user rate limit (for example a few requests per minute, using @upstash/ratelimit or a counter "
                  "table) to every endpoint that calls a paid AI API, and return 429 when it's exceeded. Require sign-in for them too."),
     ("debug-in-prod", "stack"): dict(
@@ -354,6 +475,98 @@ VARIANTS = {
         reason="An uploaded page on your own domain is stored XSS that every visitor trusts.",
         explanation="{file}:{line} accepts any file type and size, and saves uploads in {dest}, which your site serves as-is."),
 }
+
+VARIANTS.update({
+    ("supabase-privilege-escalation", "metadata-policy"): dict(
+        severity="High", title="Policy trusts user_metadata, which users can edit",
+        impact="Any user can give themselves whatever {key_text} this policy checks, and pass it.",
+        reason="supabase.auth.updateUser() lets every signed-in user change their own user_metadata.",
+        explanation="Policy \"{policy}\" on {table} ({file}:{line}) decides access from auth.jwt() -> 'user_metadata'. Every "
+                    "user can change their own user_metadata with supabase.auth.updateUser({ data: … }), so this check doesn't "
+                    "hold. app_metadata is the server-only place for roles.",
+        fix="- … auth.jwt() -> 'user_metadata' ->> '{key}' …\n+ … auth.jwt() -> 'app_metadata' ->> '{key}' …   -- only the server can set app_metadata",
+        reprompt="Replace every use of user_metadata in Row-Level Security policies with app_metadata (set it from the server "
+                 "with the service-role key) or with a lookup in a roles table users can't write to."),
+    ("supabase-privilege-escalation", "self-update"): dict(
+        severity="High", title="{title_text}",
+        impact="Any user can change {col} on their own row in {table}, and so give themselves {col_label} rights.",
+        reason="The policy lets users edit their own row, and nothing stops them editing the column that grants privileges.",
+        explanation="Policy \"{policy}\" ({file}:{line}) lets users update their own row in {table}, and {table} has a {col} "
+                    "column. Nothing limits which columns they change (no column grant, no check on {col}, no trigger), so "
+                    "supabase.from(\"{short}\").update({ {col}: … }) works for their own row.{used_note}",
+        fix="+ revoke update on {table} from authenticated;\n+ grant update ({safe_cols}) on {table} to authenticated;   "
+            "-- every column except {col}",
+        reprompt="Stop users from changing {col} in {table}: in a new migration, revoke UPDATE on the table from authenticated "
+                 "and grant UPDATE only on the columns users may edit, or add `and {col} = (select {col} from {table} where "
+                 "id = auth.uid())` to the policy's WITH CHECK."),
+    ("supabase-privilege-escalation", "role-self-grant"): dict(
+        title="Users can give themselves any role",
+        impact="Any signed-in user can add an admin role for themselves in {table}.",
+        reason="The roles table accepts rows from the very users it's meant to rank.",
+        explanation="Policy \"{policy}\" ({file}:{line}) lets users {cmd} their own rows in {table}, the table your app reads "
+                    "roles from. So a user can add a row giving themselves any role.",
+        fix="- create policy \"{policy}\" on {table} for {cmd} …\n+ -- only admins (or the server) may write roles:\n"
+            "+ create policy \"Admins manage roles\" on {table} for all to authenticated using (public.has_role((select auth.uid()), 'admin'));",
+        reprompt="Make {table} read-only for normal users: drop the policy that lets users {cmd} their own rows, and allow "
+                 "writes only to admins (checked with a SECURITY DEFINER has_role() function) or the service role."),
+    ("plaintext-password", "store"): dict(
+        explanation="{file}:{line} saves the password exactly as typed. It should be stored as a slow, salted hash (bcrypt or "
+                    "argon2), never as-is.",
+        fix="- {line_text}\n+ password_hash: await bcrypt.hash(password, 12),"),
+    ("ai-open-proxy", "model"): dict(
+        title="Callers choose which AI model you pay for",
+        impact="Anyone can switch your endpoint to the most expensive model and run up your bill.",
+        explanation="{file}:{line} takes the model name from the request, so callers can pick a model many times pricier than "
+                    "the one your feature needs.",
+        fix="- {line_text}\n+ model: \"gpt-4o-mini\",   // fixed on the server"),
+    ("missing-auth", "admin-server-fn"): dict(
+        title="Server function uses the service-role key without checking who's calling",
+        impact="Anyone can call this server function directly and it acts with full database rights.",
+        reason="Server functions are public HTTP endpoints, and the service-role key skips Row-Level Security.",
+        explanation="{file}:{line} is a server function (anyone can call it over HTTP, not just your UI) that changes data "
+                    "with the service-role client, and nothing in it checks who's calling: no auth middleware, no getUser(), no "
+                    "require…() guard.",
+        fix="+ const user = await requireUser()   // throws 401 when there's no valid session\n"
+            "+ // …then only touch rows that belong to user.id",
+        reprompt="In {file}, check the caller at the top of every server function that uses the service-role client (an auth "
+                 "middleware or a requireUser() helper that verifies the session), and scope every query to that user's rows."),
+    ("cors-wildcard", "python-credentials"): dict(
+        explanation="{file}:{line} allows every origin with credentials. With a wildcard and credentials, Starlette/FastAPI and "
+                    "flask-cors answer with the caller's own origin when the request carries cookies, so any website a signed-in "
+                    "user visits can call your API as them and read the responses.",
+        fix="- allow_origins=[\"*\"],\n+ allow_origins=[\"https://your-app.com\"],   # only your own site(s)",
+        reprompt="In {file}, replace the wildcard CORS origin with the exact list of your app's domains, and keep "
+                 "allow_credentials only if you really use cookie-based login."),
+    ("supabase-privilege-escalation", "metadata-code"): dict(
+        kind="code", severity="High", title="Role read from user_metadata, which users can edit",
+        impact="Any user can call supabase.auth.updateUser() to give themselves this role and pass the check.",
+        reason="user_metadata is written by the user; checks built on it hold only until someone tries.",
+        explanation="{file}:{line} decides access from user_metadata. Every signed-in user can change their own user_metadata "
+                    "with supabase.auth.updateUser({ data: … }), so this check doesn't hold. app_metadata (set only by the server) "
+                    "or a roles table is the place for roles.",
+        fix="- {line_text}\n+ // read the role from app_metadata (server-set) or check it in the database (RLS / an is_admin() function)",
+        reprompt="In {file}, stop reading roles from user_metadata. Store roles in app_metadata (set with the service-role key "
+                 "from the server) or in a roles table, and enforce them in Row-Level Security, not only in the UI."),
+    ("supabase-rpc-exposed", "reads"): dict(
+        severity="Medium", title="{audience_cap} can read data through {fn}",
+        impact="{audience_cap} can call {fn} with any arguments and read what it returns, past Row-Level Security.",
+        reason="It only reads, and it may be meant to be public (like a share link); check what it returns."),
+    ("supabase-rpc-exposed", "job"): dict(
+        severity="Medium", title="{audience_cap} can trigger {fn} whenever they like",
+        impact="{audience_cap} can run this job at will, as often as they like, with full database rights.",
+        reason="It takes no arguments, so callers can't aim it, but they decide when (and how often) it runs.",
+        explanation="{fn} runs as SECURITY DEFINER (ignoring Row-Level Security) and changes data, and Supabase exposes it at "
+                    "/rest/v1/rpc/{short}. Nothing in it checks who's calling, so {audience} can trigger it with "
+                    "supabase.rpc(\"{short}\"). {revoke_note}"),
+    ("supabase-storage-open", "upload"): dict(
+        severity="Medium", title="{audience_cap} can upload files to {bucket}",
+        impact="Anyone can fill {bucket} with files of any size and type, on your storage bill.",
+        reason="Fine for anonymous uploads (like a public report form); otherwise it's free storage for strangers."),
+    ("supabase-storage-open", "read"): dict(
+        severity="High", title="{audience_cap} can download every file in {bucket}",
+        impact="Anyone can list and download every file in {bucket}.",
+        reason="Fine for public assets; a leak for private uploads."),
+})
 
 # what an env var name is, for titles ("OpenAI API key exposed in the browser")
 NOUNS = [(r"SERVICE_ROLE", "Supabase service_role key"), (r"SUPABASE_SECRET", "Supabase secret key"), (r"OPENAI", "OpenAI API key"),
@@ -419,12 +632,16 @@ class VibeRules(Scanner):
     def run(self, root, work):
         files = _files(root)
         texts = _Texts(root)
-        tables = _migrations(root, files, texts)
-        findings = (_env_files(root, files, texts) + _client_literals(root, files, texts) + _rls(root, tables)
+        schema = _migrations(root, files, texts)
+        tables = schema.tables
+        findings = (_env_files(root, files, texts) + _client_literals(root, files, texts) + _rls(root, tables) + _supabase_deep(root, schema, texts)
                     + _firebase(root, files, texts) + _rate_limits(root, files, texts) + _template_html(root, files, texts))
+        findings += _auth_checks(root, files, texts)
         structural = super().available()
         if structural and any(f.endswith(JS) for f in files):
             findings += self._ast_grep(root, work, tables)
+        _connect(root, findings, files, texts)
+        self.passed = _passed(findings, files, texts, schema)
         self.checked = f"{len(files):,} file{'s' * (len(files) != 1)}" + ("" if structural else " (structural rules skipped: ast-grep isn't installed)")
         return findings
 
@@ -475,6 +692,14 @@ def _from_ast(root, meta, file, line, end, mv, tables):
         v = {"value": _value(root, file, line), "line_fix": _xss_fix(root, file, line)}
     elif rule == "sql-string-concat":
         v = {"line_fix": _sql_fix(root, file, line)}
+    elif rule == "plaintext-password" and variant == "compare":
+        v = {"line_fix": _password_fix(_read(root, file).splitlines()[line - 1].strip())}
+    elif rule == "jwt-no-expiry":
+        v = {"line_fix": _jwt_fix(_read(root, file).splitlines()[line - 1].strip())}
+    elif rule == "webhook-unsigned":
+        event = _read(root, file).splitlines()[line - 1]
+        event = re.search(r"""["'`]((?:order|subscription|transaction|payment|checkout|user|organizationMembership|PAYMENT|CHECKOUT|BILLING)[\w.]*)["'`]""", event)
+        v = _webhook_provider(event[1] if event else "", _read(root, file))
     elif rule == "unrestricted-upload":
         dest = re.search(r"""(?:dest|destination)\s*:\s*["'`]([^"'`]+)""", "\n".join(_read(root, file).splitlines()[line - 1 : end]))
         v = {"dest": dest[1] if dest else "a public folder"}
@@ -585,6 +810,89 @@ def _xss_fix(root, file, line):
         children = re.sub(r"\$\{([^}]*)\}", r"{\1}", template)
         return f"- {src}\n+ {before}<{tag}>{children}</{tag}>{after}   // React escapes {{…}} in JSX"
     return f"- {src}\n+ {src[: span[0]]}DOMPurify.sanitize({value}){src[span[1]:]}"
+
+
+STORED = re.compile(r"(?i)^(user|row|account|record|member|admin|existing|found|result|data|u|dbuser|rows\[\d+\])\??\.(password|passwd|pwd)$")
+
+
+def _password_fix(src):
+    """user.password !== password -> !(await bcrypt.compare(password, user.password_hash))."""
+    for m in re.finditer(r"([\w.\[\]?]+)\s*(===|!==|==|!=)\s*([\w.\[\]?]+)", src):
+        left, op, right = m[1], m[2], m[3]
+        stored, typed = (left, right) if STORED.match(left) else (right, left) if STORED.match(right) else (None, None)
+        if stored:
+            check = f"await bcrypt.compare({typed}, {stored.rsplit('.', 1)[0].rstrip('?')}.password_hash)"
+            return src[: m.start()] + (f"!({check})" if op.startswith("!") else check) + src[m.end() :]
+    return "const ok = await bcrypt.compare(password, user.password_hash)"
+
+
+def _jwt_fix(src):
+    """jwt.sign(payload, secret) -> jwt.sign(payload, secret, { expiresIn: "1h" })."""
+    m = re.search(r"jwt\.sign\(", src)
+    if not m:
+        return 'jwt.sign(payload, secret, { expiresIn: "1h" })'
+    i, depth, quote = m.end(), 0, None
+    while i < len(src):
+        c = src[i]
+        if quote:
+            quote = None if c == quote and src[i - 1] != "\\" else quote
+        elif c in "\"'`":
+            quote = c
+        elif c in "([{":
+            depth += 1
+        elif c in ")]}":
+            if depth == 0:
+                return src[:i] + ', { expiresIn: "1h" }' + src[i:]
+            depth -= 1
+        i += 1
+    return src
+
+
+WEBHOOKS = [  # (file mentions, event pattern, provider, how to verify, docs, money)
+    (r"lemon", r"^(order|subscription)_", "Lemon Squeezy", "compare the X-Signature header with an HMAC-SHA256 of the raw body (your signing secret)",
+     "https://docs.lemonsqueezy.com/help/webhooks/signing-requests", True),
+    (r"paddle", r"^(transaction|subscription)\.", "Paddle", "paddle.webhooks.unmarshal(rawBody, secret, signature)",
+     "https://developer.paddle.com/webhooks/signature-verification", True),
+    (r"razorpay", r"^(payment|order|subscription)\.", "Razorpay", "Razorpay.validateWebhookSignature(rawBody, signature, secret)",
+     "https://razorpay.com/docs/webhooks/validate-test/", True),
+    (r"paypal", r"^(PAYMENT|CHECKOUT|BILLING)\.", "PayPal", "PayPal's verify-webhook-signature API with the transmission headers",
+     "https://developer.paypal.com/api/rest/webhooks/rest/", True),
+    (r"clerk|svix", r"^(user|organizationMembership)\.", "Clerk", "new Webhook(secret).verify(rawBody, svixHeaders) from the svix package",
+     "https://clerk.com/docs/webhooks/sync-data", False),
+    (r"polar", r"^(order|checkout|subscription)\.", "Polar", "validateEvent(rawBody, headers, secret) from @polar-sh/sdk/webhooks",
+     "https://docs.polar.sh/integrate/webhooks/delivery", True),
+]
+
+
+def _webhook_provider(event, text):
+    low = text.lower()
+    hit = next((w for w in WEBHOOKS if re.search(w[0], low) and re.match(w[1], event)), None) or next(
+        (w for w in WEBHOOKS if re.match(w[1], event)), None)
+    if not hit:
+        return {"provider": "Payment provider", "event": event, "verify_hint": "check the signature header with your webhook secret",
+                "doc": "https://cheatsheetseries.owasp.org/cheatsheets/Web_Service_Security_Cheat_Sheet.html", "money_risk": True}
+    return {"provider": hit[2], "event": event, "verify_hint": hit[3], "doc": hit[4], "money_risk": hit[5]}
+
+
+RATE_FIXES = {
+    ("auth", "express"): "+ import rateLimit from \"express-rate-limit\"\n+ const authLimit = rateLimit({ windowMs: 15 * 60 * 1000, limit: 10 })\n"
+                         "- {line_text}\n+ {line_limited}",
+    ("ai", "express"): "+ import rateLimit from \"express-rate-limit\"\n+ const aiLimit = rateLimit({ windowMs: 60 * 1000, limit: 5 })\n"
+                       "- {line_text}\n+ {line_limited}",
+    ("auth", "next"): "+ import { Ratelimit } from \"@upstash/ratelimit\"\n+ import { Redis } from \"@upstash/redis\"\n"
+                      "+ const limit = new Ratelimit({ redis: Redis.fromEnv(), limiter: Ratelimit.slidingWindow(10, \"15 m\") })\n"
+                      "+ const { success } = await limit.limit(req.headers.get(\"x-forwarded-for\") ?? \"anon\")\n"
+                      "+ if (!success) return new Response(\"Too many attempts\", { status: 429 })",
+    ("ai", "next"): "+ import { Ratelimit } from \"@upstash/ratelimit\"\n+ import { Redis } from \"@upstash/redis\"\n"
+                    "+ const limit = new Ratelimit({ redis: Redis.fromEnv(), limiter: Ratelimit.slidingWindow(5, \"1 m\") })\n"
+                    "+ const { success } = await limit.limit(userId)   // the signed-in user's id\n"
+                    "+ if (!success) return new Response(\"Too many requests\", { status: 429 })",
+    ("ai", "edge"): "+ // count this user's calls in the last minute (a small table, or Upstash) and refuse above a limit\n"
+                    "+ const { count } = await admin.from(\"ai_calls\").select(\"*\", { count: \"exact\", head: true })\n"
+                    "+   .eq(\"user_id\", user.id).gte(\"created_at\", new Date(Date.now() - 60_000).toISOString())\n"
+                    "+ if ((count ?? 0) >= 5) return new Response(\"Too many requests\", { status: 429 })\n"
+                    "+ await admin.from(\"ai_calls\").insert({ user_id: user.id })",
+}
 
 
 def _eval_fix(sink):
@@ -764,7 +1072,7 @@ def _client_literals(root, files, texts):
 
 def _migrations(root, files, texts):
     sql = sorted(f for f in files if re.match(r"(.*/)?supabase/migrations/[^/]+\.sql$", f))
-    return supabase_sql.read([(f, texts[f]) for f in sql]) if sql else {}
+    return supabase_sql.read([(f, texts[f]) for f in sql]) if sql else supabase_sql.Schema()
 
 
 def _owner(t):
@@ -791,7 +1099,7 @@ VERBS = {"all": "read, change or delete", "update": "change", "delete": "delete"
 def _rls(root, tables):
     out = []
     for t in tables.values():
-        if not supabase_sql.exposed(t):
+        if not supabase_sql.exposed(t) or t.name == "storage.objects":
             continue
         short = t.name.removeprefix("public.")
         if t.kind == "view":
@@ -826,7 +1134,150 @@ def _rls(root, tables):
             out.append(build("supabase-rls-off", variant, root, p.file, p.line, None, conf, group=t.name, **(base | dict(
                 policy=p.name, cmd=p.cmd, verbs=VERBS[p.cmd], policy_fix=_policy_fix(t, p.cmd), owner_or_user_id=owner or "user_id",
                 cmd_text={"all": "do anything", "select": "read rows", "insert": "add rows", "update": "change rows", "delete": "delete rows"}[p.cmd],
-                audience="anyone, signed in or not" if anyone else "any signed-in user"))))
+                audience="anyone (signed in or not)" if anyone else "any signed-in user"))))
+    return out
+
+
+PRIV_KEYS = r"role|roles|user_role|is_admin|admin|is_staff|is_superuser|permissions?|access_level|user_type|account_type|" \
+            r"plan|tier|is_premium|is_pro|is_paid|subscription_\w+|credits|balance"
+CALLER = re.compile(r"auth\.uid\(\)|auth\.jwt\(\)|auth\.role\(\)|request\.jwt|current_setting\(\s*'request|has_role|has_any_role|is_admin|"
+                    r"current_user|session_user")
+WRITES = re.compile(r"\b(insert\s+into|update\s+[\w.\"]+\s+set|delete\s+from|truncate)\b")
+OWN_ROW = re.compile(r"auth\.uid\(\)\)?(::\w+)?=\(?\w+|\w+=\(?(select)?auth\.uid\(\)")
+ADMINISH = re.compile(r"has_role|has_any_role|is_admin|admin|is_staff|service_role")
+
+
+def _find_line(text, start, needle):
+    """Line number of the first line at or after `start` that matches `needle` (regex), else `start`."""
+    lines = text.splitlines()
+    return next((n for n in range(start, len(lines) + 1) if re.search(needle, lines[n - 1], re.I)), start)
+
+
+def _col_label(col):
+    if re.match(r"plan|tier|is_premium|is_pro|is_paid|subscription", col):
+        return "a paid plan", "Users can give themselves a paid plan"
+    if re.match(r"credits|balance", col):
+        return "more credits", "Users can give themselves unlimited credits"
+    return "admin", "Users can make themselves admins"
+
+
+def _columns(t):
+    """Column names of a CREATE TABLE (plus later ADD COLUMNs), constraints left out."""
+    body = t.columns.split("(", 1)[-1]
+    parts, depth, cur = [], 0, ""
+    for c in body:
+        depth += {"(": 1, ")": -1}.get(c, 0)
+        if c == "," and depth == 0:
+            parts.append(cur)
+            cur = ""
+        else:
+            cur += c
+    parts.append(cur)
+    names = [p.strip().split(" ")[0].strip('"') for p in parts if p.strip()]
+    return [n for n in names if n and n not in ("primary", "constraint", "unique", "foreign", "check", "exclude", "like")]
+
+
+def _supabase_deep(root, schema, texts):
+    """Privilege escalation, functions exposed over RPC, and open storage, from the migrations' final state."""
+    out = []
+    auth_triggers = {fn for table, _, fn, _, _ in schema.triggers if table == "auth.users"}
+    # roles copied from sign-up metadata (the person signing up writes raw_user_meta_data)
+    for f in schema.functions.values():
+        m = re.search(rf"raw_user_meta_data\s*->>?\s*'({PRIV_KEYS})'", f.body)
+        if m:
+            line = _find_line(texts[f.file], f.line, rf"raw_user_meta_data\s*->>?\s*'{m[1]}'")
+            target = re.search(r"insert into ([\w.]+)", f.body)
+            out.append(build("supabase-privilege-escalation", "", root, f.file, line, None,
+                             "Confirmed reachable" if f.name in auth_triggers else "Likely", group=f.name,
+                             fn=f"{f.name}()", key=m[1], target=target[1] if target else "the new user's row",
+                             extra_evidence=[f"{f.name}() runs on every sign-up (trigger on auth.users)"] if f.name in auth_triggers else []))
+    privileged_cols = set()
+    for t in schema.tables.values():
+        for p in t.policies.values():
+            privileged_cols |= {c for c in re.findall(PRIV_KEYS, p.using + p.check)}
+    for f in schema.functions.values():
+        privileged_cols |= {c for c in re.findall(rf"\b({PRIV_KEYS})\b", f.body)}
+    for t in schema.tables.values():
+        if t.kind != "table" or not supabase_sql.exposed(t) or not t.rls:
+            continue
+        short, cols = t.name.removeprefix("public."), _columns(t)
+        for p in t.policies.values():
+            expr = p.using + " " + p.check
+            if not p.permissive or not (p.roles & {"authenticated", "anon", "public"}):
+                continue
+            if "user_metadata" in expr:  # every user edits their own user_metadata
+                key = re.search(r"user_metadata'?\)?->>?'(\w+)'", expr)
+                out.append(build("supabase-privilege-escalation", "metadata-policy", root, p.file, p.line, group=t.name,
+                                 table=t.name, policy=p.name, key=key[1] if key else "role",
+                                 key_text=f"'{key[1]}' value" if key else "value"))
+                continue
+            if not OWN_ROW.search(expr) or ADMINISH.search(expr):
+                continue
+            if p.cmd in ("insert", "update", "all") and re.search(r"(^|_)(roles?|permissions?|admins?)$", short):
+                out.append(build("supabase-privilege-escalation", "role-self-grant", root, p.file, p.line, group=t.name,
+                                 table=t.name, policy=p.name, cmd=p.cmd))
+                continue
+            if p.cmd not in ("update", "all"):
+                continue
+            granted = schema.column_grants.get((t.name, "authenticated"))
+            for col in [c for c in cols if re.fullmatch(PRIV_KEYS, c)]:
+                trigger_guard = any(table == t.name and "before" in timing and "update" in timing and fn in schema.functions
+                                    and col in schema.functions[fn].body for table, timing, fn, _, _ in schema.triggers)
+                if col in expr or (granted is not None and col not in granted) or trigger_guard:
+                    continue
+                label, title = _col_label(col)
+                used = col in privileged_cols
+                out.append(build("supabase-privilege-escalation", "self-update", root, p.file, p.line,
+                                 None, "Likely", group=f"{t.name}.{col}", table=t.name, short=short, policy=p.name, col=col,
+                                 col_label=label, title_text=title, safe_cols=", ".join(c for c in cols if c != col and not re.fullmatch(PRIV_KEYS, c))[:120] or "…",
+                                 used_note=f" Your policies or functions also use {col} to decide access, so this is a direct way in." if used else ""))
+                break
+    # SECURITY DEFINER functions anyone can call over /rest/v1/rpc
+    for f in schema.functions.values():
+        if not f.definer or not f.name.startswith("public.") or "trigger" in f.returns or CALLER.search(f.body):
+            continue
+        callable_by = {"anon", "authenticated"} - f.revoked
+        if not callable_by:
+            continue
+        writes = bool(WRITES.search(f.body))
+        reads = bool(re.search(r"\b(setof|table|json|jsonb|record)\b", f.returns) and re.search(r"\bselect\b.+\bfrom\b", f.body))
+        if not writes and not reads:
+            continue  # scalar helpers (has_role-style booleans) leak little
+        anyone = "anon" in callable_by
+        audience = "anyone" if anyone else "any signed-in user"
+        note = ("Revoking EXECUTE from PUBLIC isn't enough on Supabase: anon and authenticated are granted it directly."
+                if "public" in f.revoked and anyone else "")
+        variant = ("" if f.args else "job") if writes else "reads"  # with arguments, the caller picks the rows
+        out.append(build("supabase-rpc-exposed", variant, root, f.file, f.line, None,
+                         "Likely" if variant == "" and "raise exception" not in f.body else "Needs review", group=f.name,
+                         fn=f"{f.name}({f.args})", short=f.name.removeprefix("public."), audience=audience,
+                         audience_cap=audience[:1].upper() + audience[1:], revoke_note=note))
+    # storage policies that check the bucket but not the owner
+    storage = schema.tables.get("storage.objects")
+    for p in (storage.policies.values() if storage else []):
+        expr = p.using + " " + p.check
+        if not p.permissive or not (p.roles & {"authenticated", "anon", "public"}) or OWN_ROW.search(expr) or re.search(
+                r"auth\.uid\(\)|owner|foldername|has_role|has_any_role|is_admin|auth\.jwt\(\)", expr):
+            continue
+        anyone = bool(p.roles & {"anon", "public"})
+        buckets = re.findall(r"'([^']+)'", expr)
+        bucket = (f"the {buckets[0]} bucket" if len(buckets) == 1 else f"the {', '.join(buckets[:-1])} and {buckets[-1]} buckets"
+                  if buckets else "every bucket")
+        if p.cmd in ("update", "delete", "all"):
+            variant, sev_conf = "", "Likely" if anyone else "Needs review"
+        elif p.cmd == "insert" and anyone:
+            variant, sev_conf = "upload", "Needs review"
+        elif p.cmd == "select" and anyone and not all(schema.buckets.get(b, {}).get("public") for b in buckets or [""]):
+            variant, sev_conf = "read", "Needs review"
+        else:
+            continue
+        audience = "anyone" if anyone else "any signed-in user"
+        out.append(build("supabase-storage-open", variant, root, p.file, p.line, None, sev_conf, group=f"storage:{bucket}",
+                         bucket=bucket, bucket_id=buckets[0] if buckets else "…",
+                         policy=p.name, audience=audience, audience_cap=audience[:1].upper() + audience[1:],
+                         cmd_text={"update": "replace files", "delete": "delete files", "all": "upload, replace and delete files",
+                                   "insert": "upload files", "select": "download files"}[p.cmd],
+                         using_text=f"bucket_id = '{buckets[0]}'" if buckets else "true"))
     return out
 
 
@@ -975,13 +1426,7 @@ def _rate_limits(root, files, texts):
     # app-wide limiter (package or middleware); Edge Functions are separate deployments and are judged one by one below
     limited = bool(LIMITER.search(texts["package.json"])) or any(
         LIMITER.search(texts[f]) for f in code if (SERVER_PATH.search(f) or "express" in texts[f]) and "supabase/functions/" not in f)
-    mounts = {}
-    for f in code:
-        imports = {m[1] or m[2]: m[3] for m in IMPORTED.finditer(texts[f])}
-        for m in MOUNT.finditer(texts[f]):
-            target = _resolve(f, m[4] or imports.get(m[5] or "", ""), files)
-            if target:
-                mounts[target] = m[2].rstrip("/")
+    mounts = _mounts(files, texts)
     out = []
     for f in code:
         text = texts[f]
@@ -1005,7 +1450,7 @@ def _rate_limits(root, files, texts):
                 method = exported[1] if exported else "POST"
             line = re.search(r"export\s+(?:async\s+)?(?:function|const)\s+(POST|PUT|PATCH|DELETE)\b|\b(?:Deno\.)?serve\(|export\s+default", text) or re.search(r"\S", text)
             n = text.count("\n", 0, line.start()) + 1 if line else 1
-            out += _rate_finding(root, f, n, method, path, text, conf)
+            out += _rate_finding(root, f, n, method, path, text, conf, "edge" if edge else "next")
             continue
         if limited:
             continue
@@ -1013,16 +1458,20 @@ def _rate_limits(root, files, texts):
         for i, m in enumerate(hits):
             body = text[m.start() : hits[i + 1].start() if i + 1 < len(hits) else len(text)]
             path = ("/" + "/".join(x for x in (mounts.get(f, "") + "/" + m[3]).split("/") if x)) or "/"
-            out += _rate_finding(root, f, text.count("\n", 0, m.start()) + 1, m[1].upper(), path, body, "Likely")
+            out += _rate_finding(root, f, text.count("\n", 0, m.start()) + 1, m[1].upper(), path, body, "Likely", "express")
     return out
 
 
-def _rate_finding(root, file, line, method, path, body, conf):
-    if AI_CALL.search(body):
-        return [build("no-rate-limit", "ai", root, file, line, None, conf, method=method, path=path)]
-    if AUTH_PATH.search(path):
-        return [build("no-rate-limit", "auth", root, file, line, None, conf, method=method, path=path)]
-    return []
+def _rate_finding(root, file, line, method, path, body, conf, kind):
+    variant = "ai" if AI_CALL.search(body) else "auth" if AUTH_PATH.search(path) else None
+    if not variant:
+        return []
+    src = _read(root, file).splitlines()[line - 1].strip() if line else ""
+    name = "aiLimit" if variant == "ai" else "authLimit"
+    limited = re.sub(r"""(\.(?:post|put|patch|delete|all)\(\s*(["'`])[^"'`]*\2\s*,)""", rf"\1 {name},", src, count=1)
+    fix = _fill(RATE_FIXES.get((variant, kind)) or RATE_FIXES.get((variant, "next")) or RATE_FIXES[("ai", "edge")],
+                {"line_text": src, "line_limited": limited})
+    return [build("no-rate-limit", variant, root, file, line, None, conf, method=method, path=path, fix_text=fix)]
 
 
 def _resolve(importer, spec, files):
@@ -1036,6 +1485,164 @@ def _resolve(importer, spec, files):
         if cand in files:
             return cand
     return None
+
+
+# --- login tokens nobody checks; server functions using the service role with no caller check -------------------
+
+TOKEN_ISSUE = re.compile(r"\bjwt\.sign\(|new SignJWT\(|\bsignJwt\(")
+TOKEN_CHECK = re.compile(r"jwt\.verify|jwtVerify|verifyJwt|verifyToken|expressjwt|express-jwt|passport\.(authenticate|use)|getServerSession|"
+                         r"getToken\(|clerkMiddleware|requireAuth|verifyIdToken|\.auth\.getUser|auth\.api\.getSession|getIronSession|"
+                         r"req\.user\b|req\.auth\b|res\.locals\.user|jwt\.decode")
+ANY_ROUTE = re.compile(r"\b(?:app|router|server|api|routes?)\.(get|post|put|patch|delete)\(\s*([\"'`])([^\"'`]*)\2", re.I)
+OPEN_OK = re.compile(r"(?i)log-?in|sign-?in|sign-?up|register|webhook|health|public|callback")
+ADMIN_CLIENT = re.compile(r"supabaseAdmin|serviceRole|service_role|SERVICE_ROLE|createAdminClient|adminClient|getSupabaseAdmin")
+ADMIN_WRITE = re.compile(r"\.(insert|update|upsert|delete)\(|\.rpc\(|auth\.admin\.")
+GUARD = re.compile(r"\b(require|assert|ensure|check|verify|guard|protect|with|get)\w*(User|Auth|Admin|Staff|Session|Role|Access|Login|"
+                   r"Permission|Caller|Claims)\w*\(|\.getUser\(|getClaims\(|currentUser\(|\bauth\(\)|getServerSession|\.middleware\(|"
+                   r"headers\.get\(\s*[\"']authorization|context\.(user|userId|claims|session|auth)\b|clerk")
+
+
+def _auth_checks(root, files, texts):
+    next_app = '"next"' in texts["package.json"]
+    server = [f for f in files if f.endswith(JS) and not TEST_PATH.search(f) and not is_browser_code(f, texts[f], next_app)]
+    out = []
+    issuers = [(f, m) for f in server for m in [TOKEN_ISSUE.search(texts[f])] if m]
+    if issuers and not any(TOKEN_CHECK.search(texts[f]) for f in server):
+        f, m = issuers[0]
+        mounts = _mounts(files, texts)
+        routes = []
+        for g in server:
+            for r in ANY_ROUTE.finditer(texts[g]):
+                path = "/" + "/".join(x for x in (mounts.get(g, "") + "/" + r[3]).split("/") if x)
+                if not OPEN_OK.search(path):
+                    routes.append(f"{r[1].upper()} {path} ({g}:{texts[g].count(chr(10), 0, r.start()) + 1})")
+        out.append(build("missing-auth", "", root, f, texts[f].count("\n", 0, m.start()) + 1, None, "Likely",
+                         extra_evidence=([f"These endpoints answer anyone: {', '.join(routes[:8])}" + (" …" if len(routes) > 8 else "")]
+                                         if routes else [])))
+    for f in server:
+        text = texts[f]
+        if not ADMIN_CLIENT.search(text):
+            continue
+        if "createServerFn" in text:
+            starts = [m.start() for m in re.finditer(r"createServerFn\(", text)]
+        elif re.search(r"""^\s*["']use server["']""", text[:300], re.M) or re.search(r"(^|/)route\.[jt]s$", f):
+            starts = [m.start() for m in re.finditer(r"export\s+(?:async\s+)?(?:function\s+\w+|const\s+(?:GET|POST|PUT|PATCH|DELETE)\b)", text)]
+        else:
+            continue
+        for i, start in enumerate(starts):
+            segment = text[start : starts[i + 1] if i + 1 < len(starts) else len(text)]
+            # public reads through the admin client (a list of published items) are a smell, not a hole: flag writes
+            if ADMIN_CLIENT.search(segment) and ADMIN_WRITE.search(segment) and not GUARD.search(segment):
+                out.append(build("missing-auth", "admin-server-fn", root, f, text.count("\n", 0, start) + 1, None, "Needs review"))
+    return out
+
+
+def _mounts(files, texts):
+    """file -> the path prefix an Express app mounts it under (app.use("/api/auth", require("./routes/auth")))."""
+    mounts = {}
+    for f in files:
+        if not f.endswith(JS):
+            continue
+        imports = {m[1] or m[2]: m[3] for m in IMPORTED.finditer(texts[f])}
+        for m in MOUNT.finditer(texts[f]):
+            target = _resolve(f, m[4] or imports.get(m[5] or "", ""), files)
+            if target:
+                mounts[target] = m[2].rstrip("/")
+    return mounts
+
+
+# --- connections between findings, proof commands, and what passed ------------------------------------------------
+
+SUPABASE_URL = re.compile(r"https://([a-z0-9]{6,40})\.supabase\.co")
+
+
+def _where(file, text, offset):
+    return f"{file}:{text.count(chr(10), 0, offset) + 1}"
+
+
+def _connect(root, findings, files, texts):
+    """Link findings that are one story (an env var and the code that reads it; an open table and the browser code that
+    queries it), confirm open tables when the app ships what an attacker needs, and add a read-only check command."""
+    next_app = '"next"' in texts["package.json"]
+    browser = [f for f in files if is_browser_code(f, texts[f], next_app)]
+    env = [f for f in files if ENV_FILE.search(f) and not ENV_EXAMPLE.search(f)]
+    url = next(((m[0], _where(f, texts[f], m.start())) for f in env + browser for m in [SUPABASE_URL.search(texts[f])] if m), None)
+    key = next((_where(f, texts[f], m.start()) for f in env + browser
+                for m in [re.search(r"(ANON|PUBLISHABLE)_KEY\s*=|sb_publishable_|eyJ[\w-]+\.eyJ", texts[f])] if m), None)
+    queries = {}
+    for f in browser:
+        for n, line in enumerate(texts[f].splitlines(), 1):
+            for m in re.finditer(r"""\.from\(\s*["'`]([\w-]+)["'`]\s*\)|functions\.invoke\(\s*["'`]([\w-]+)["'`]""", line):
+                queries.setdefault(m[1] or "fn:" + m[2], []).append(f"{f}:{n}")
+    by_var = {}
+    for f in findings:
+        rule = f.raw_rule_id.split("@")[0]
+        if rule in ("vibe.frontend-secret:env-file", "vibe.frontend-secret:code-env"):
+            var = re.search(r"\b((?:VITE_|NEXT_PUBLIC_|REACT_APP_|EXPO_PUBLIC_|NUXT_PUBLIC_|GATSBY_|VUE_APP_|PUBLIC_)\w+)", f.title + " " + f.explanation)
+            if var:
+                by_var.setdefault(var[1], []).append(f)
+    for group in by_var.values():
+        defined = [f for f in group if f.raw_rule_id.startswith("vibe.frontend-secret:env-file")]
+        read = [f for f in group if f.raw_rule_id.startswith("vibe.frontend-secret:code-env")]
+        for d in defined:
+            d.evidence += [f"Read by browser code at {r.file}:{r.line}" for r in read]
+        for r in read:
+            r.evidence += [f"Its value is set in {d.file}:{d.line}" for d in defined]
+    for f in findings:
+        rule = f.raw_rule_id.split("@")[0]
+        table = f.raw_rule_id.split("@")[1] if "@" in f.raw_rule_id else ""
+        short = table.removeprefix("public.")
+        if rule in ("vibe.supabase-rls-off", "vibe.supabase-rls-off:open-read", "vibe.supabase-rls-off:open-write") and short:
+            used = queries.get(short, [])
+            if used:
+                f.evidence.append(f"Your browser code already queries this table ({', '.join(used[:2])}), so the request an attacker "
+                                  "needs is right there in your JavaScript.")
+            if url:
+                f.evidence.append(f"Check it yourself (read-only): curl '{url[0]}/rest/v1/{short}?select=*&limit=1' -H 'apikey: <your anon key>'. "
+                                  "If rows come back, anyone can see them.")
+                if key and rule == "vibe.supabase-rls-off":
+                    f.confidence = "Confirmed reachable"
+                    f.evidence.append(f"Your app ships the project URL ({url[1]}) and the anon key ({key}), which is all that request needs.")
+        if rule.startswith("vibe.supabase-edge-service-role-no-auth"):
+            name = re.search(r"functions/([^/]+)/", f.file)
+            calls = queries.get("fn:" + name[1], []) if name else []
+            if calls:
+                f.evidence.append(f"Your site calls it from {', '.join(calls[:2])}: the same call works for anyone with the anon key.")
+
+
+def _all(n, noun):
+    return f"all {n} {noun}s" if n > 1 else f"your one {noun}"
+
+
+def _passed(findings, files, texts, schema):
+    """What we checked and found right: so a clean result means something (§15)."""
+    hit = {f.raw_rule_id.removeprefix("vibe.").split(":")[0].split("@")[0] for f in findings if f.source == "vibeguard"}
+    out = []
+    tables = [t for t in schema.tables.values() if t.kind == "table" and supabase_sql.exposed(t) and t.name != "storage.objects"]
+    if tables and "supabase-rls-off" not in hit:
+        out.append(f"Row-Level Security is on for {_all(len(tables), 'table')}, with no wide-open policies")
+    if tables and "supabase-privilege-escalation" not in hit:
+        out.append("Users can't give themselves roles (sign-up metadata, role tables, self-edited role columns)")
+    definers = [f for f in schema.functions.values() if f.definer and f.name.startswith("public.") and "trigger" not in f.returns]
+    if definers and "supabase-rpc-exposed" not in hit:
+        out.append(f"No SECURITY DEFINER function can be run by just anyone ({_all(len(definers), 'function')} checked)")
+    if "storage.objects" in schema.tables and "supabase-storage-open" not in hit:
+        out.append("Storage policies check who owns each file")
+    edge = [f for f in files if re.search(r"supabase/functions/[^/_][^/]*/index\.[jt]s$", f) and ADMIN_CLIENT.search(texts[f])]
+    if edge and "supabase-edge-service-role-no-auth" not in hit:
+        out.append(f"Edge Functions that use the service-role key check who's calling ({_all(len(edge), 'function')} checked)")
+    next_app = '"next"' in texts["package.json"]
+    if any(is_browser_code(f, texts[f], next_app) for f in files) and "frontend-secret" not in hit:
+        out.append("No secret keys in browser code or public env vars")
+    if any(f.endswith(".rules") or f.endswith("database.rules.json") for f in files) and "firebase-open-rules" not in hit:
+        out.append("Firebase rules don't leave data open to everyone")
+    code = [texts[f] for f in files if f.endswith(JS) and not TEST_PATH.search(f)]
+    if any(re.search(r"\.query\(|\.execute\(|\$queryRaw", t) for t in code) and "sql-string-concat" not in hit:
+        out.append("SQL queries keep values separate from the query text")
+    if any(re.search(r"(?i)webhook", t) and re.search(r"constructEvent|createHmac|svix|unmarshal|validateEvent", t) for t in code) \
+            and not hit & {"stripe-webhook-unsigned", "webhook-unsigned"}:
+        out.append("Payment webhooks verify their signatures")
+    return out
 
 
 # --- Vue v-html / Svelte {@html} ------------------------------------------------------------------------------

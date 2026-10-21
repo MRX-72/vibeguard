@@ -1,0 +1,16 @@
+id: webhook-unsigned
+language: tsx
+severity: error
+message: Webhook handled without checking its signature
+rule:
+  any:
+    - kind: string
+    - kind: template_string
+  regex: '^["''`](order_created|order_refunded|subscription_created|subscription_updated|subscription_payment_success|transaction\.completed|transaction\.paid|subscription\.activated|payment\.captured|order\.paid|subscription\.charged|PAYMENT\.CAPTURE\.COMPLETED|CHECKOUT\.ORDER\.APPROVED|BILLING\.SUBSCRIPTION\.ACTIVATED|checkout\.completed|subscription\.active|user\.created|user\.deleted|organizationMembership\.created)["''`]$'
+  inside:
+    kind: program
+    stopBy: end
+    regex: '(?i)webhook'
+    not:
+      regex: '(?i)x-signature|createHmac|timingSafeEqual|verifySignature|validateWebhookSignature|svix|webhook\.verify|wh\.verify|paddle-signature|razorpay-signature|verifyWebhook|validateEvent|constructEvent|webhooks\.verify|paypal-transmission-sig|verify-webhook-signature|unwrap\(|unmarshal'
+metadata: {vibe: webhook-unsigned, confidence: Likely}

@@ -1,0 +1,15 @@
+id: supabase-user-metadata-role
+language: tsx
+severity: error
+message: Role read from user_metadata, which users can edit
+rule:
+  kind: member_expression
+  regex: 'user_metadata\??\.(role|roles|is_admin|isAdmin|admin|is_staff|isStaff|plan|tier|permissions?|is_premium|isPremium|subscription\w*)$'
+  inside:
+    any:
+      - {kind: binary_expression}
+      - {kind: if_statement}
+      - {kind: ternary_expression}
+      - {kind: unary_expression}
+    stopBy: end
+metadata: {vibe: supabase-privilege-escalation, variant: metadata-code, confidence: Likely}

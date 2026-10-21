@@ -1,0 +1,12 @@
+id: jwt-no-expiry
+language: tsx
+severity: warning
+message: Login tokens never expire
+rule:
+  any:
+    - pattern: jwt.sign($PAYLOAD, $SECRET)
+    - all:
+        - pattern: jwt.sign($PAYLOAD, $SECRET, $OPTIONS)
+        - not: {has: {regex: 'expiresIn', stopBy: end}}
+  not: {has: {regex: '\bexp\s*:', stopBy: end}}
+metadata: {vibe: jwt-no-expiry, confidence: Likely}

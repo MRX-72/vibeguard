@@ -1,0 +1,10 @@
+id: mass-assignment
+language: tsx
+severity: error
+message: The whole request body is written to the database
+rule:
+  kind: call_expression
+  all:
+    - has: {field: function, regex: '\.(update|insert|upsert|create|createMany|updateOne|updateMany|findOneAndUpdate|findByIdAndUpdate|save)$'}
+    - has: {field: arguments, regex: '^\(\s*(\{\s*(data\s*:\s*)?(\.\.\.)?\s*)?(req|request|ctx\.request)\.body\s*[,)}]'}
+metadata: {vibe: mass-assignment, confidence: Likely}

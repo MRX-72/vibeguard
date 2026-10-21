@@ -48,7 +48,8 @@ cd backend && .venv/bin/python rules/fetch_registry.py   # writes rules/registry
 
 Our own checks for mistakes AI app builders make (VibeGuard.md §7), in `backend/rules/` and `backend/scanners/custom_rules.py`:
 semgrep taint rules (`rules/vibe-coded.yml`), ast-grep structural rules (`rules/ast-grep/rules/`), and Python checks for env files,
-Supabase migrations, Firebase rules and rate limits. Every rule's report text (title, severity, fix, re-prompt) is in `CATALOG`.
+Supabase migrations (RLS, roles, RPC functions, storage), Firebase rules, rate limits and app-wide auth. 23 rules, 59 variants;
+every rule's report text (title, severity, fix, re-prompt) is in `CATALOG`.
 
 ## Checks
 

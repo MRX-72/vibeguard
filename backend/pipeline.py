@@ -68,7 +68,7 @@ def _run_one(scan_id, scanner, root, work, steps):
         log.exception("%s crashed", scanner.name)
         _set(steps, scanner.name, "failed", "didn't finish (unexpected error)")
         return []
-    _set(steps, scanner.name, "done", f"{len(found)} finding{'s' * (len(found) != 1)}", checked=scanner.checked)
+    _set(steps, scanner.name, "done", f"{len(found)} finding{'s' * (len(found) != 1)}", checked=scanner.checked, passed=list(scanner.passed))
     return found
 
 

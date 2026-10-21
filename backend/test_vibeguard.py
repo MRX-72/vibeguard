@@ -286,22 +286,27 @@ def test_npm_dependency_tiers():
 
 # The demo app's full expected report: every planted issue at its severity, every decoy filtered, nothing else.
 # Phase 4/5 changes that add, drop or re-rate anything must update this on purpose.
-DEMO = {
+DEMO = sorted([
     (".env", 3, "Critical"), (".env", 4, "Critical"),  # service_role + OpenAI keys in NEXT_PUBLIC_ vars
     ("src/lib/ai.js", 5, "Critical"), ("src/lib/supabase.js", 6, "Critical"),  # key + SDK in the browser; service_role read in the browser
     ("server/routes/calc.js", 5, "Critical"), ("server/routes/users.js", 6, "Critical"),  # eval and SQL on request data (taint)
     ("firestore.rules", 5, "Critical"),
     ("supabase/migrations/20260101000000_init.sql", 1, "Critical"), ("supabase/migrations/20260101000000_init.sql", 26, "Critical"),  # RLS off
+    ("supabase/migrations/20260101000000_init.sql", 33, "Critical"),  # is_admin taken from sign-up metadata
     ("supabase/migrations/20260101000000_init.sql", 23, "High"),  # anyone can read entries
+    ("supabase/migrations/20260101000000_init.sql", 42, "High"),  # clear_entries(uuid) callable by anyone
     ("src/pages/Search.jsx", 9, "High"), ("src/components/CommentList.jsx", 17, "High"),  # XSS (taint, pattern)
     ("src/pages/Admin.jsx", 6, "High"), ("src/pages/Admin.jsx", 14, "High"),  # client-only admin checks
-    ("server/routes/auth.js", 10, "High"),  # JWT signing secret
+    ("server/routes/auth.js", 9, "High"),  # plaintext passwords
+    ("server/routes/auth.js", 10, "High"), ("server/routes/auth.js", 10, "High"),  # JWT signing secret; tokens never verified
+    ("server/routes/auth.js", 10, "Medium"),  # tokens never expire
     ("server/routes/billing.js", 8, "High"), ("supabase/functions/delete-account/index.ts", 12, "High"),
     ("server/routes/upload.js", 4, "High"),  # any file type into public/
     (".env.production", 2, "Medium"), ("server/index.js", 21, "Medium"),  # debug flags, stack traces in responses
     ("server/routes/auth.js", 5, "Medium"), ("server/routes/chat.js", 6, "Medium"),  # no rate limit (login, paid AI)
+    ("server/routes/chat.js", 9, "Medium"),  # the caller writes the whole AI conversation
     ("server/index.js", 5, "Low"),  # CORS *
-}
+])
 DEMO_NOISE = {(".env", 2), ("server/index.js", 4)}  # anon key (public by design), CSRF in an app without cookies
 DEMO_DEPS = {"axios@0.21.1", "express@4.17.1", "jsonwebtoken@8.5.1", "lodash@4.17.15", "multer@1.4.2"}
 
@@ -322,8 +327,8 @@ def test_scanners_on_sample_repo():
     names = {s.name for s in installed}
     by = {(f.file, f.line): f for f in out}
     if {"gitleaks", "semgrep", "osv-scanner"} <= names and shutil.which("ast-grep"):
-        code = {(f.file, f.line, f.severity) for f in out if f.kind != "dependency" and not f.is_false_positive}
-        assert code == DEMO, f"missing {DEMO - code}, unexpected {code - DEMO}"
+        code = sorted((f.file, f.line, f.severity) for f in out if f.kind != "dependency" and not f.is_false_positive)
+        assert code == DEMO, f"missing {sorted(set(DEMO) - set(code))}, unexpected {sorted(set(code) - set(DEMO))}, all {code}"
         # the three the demo script promises (§12), each confirmed and with a fix
         for key in [("src/lib/ai.js", 5), ("src/pages/Search.jsx", 9), ("server/routes/users.js", 6)]:
             assert by[key].fix_diff and by[key].explanation, key
@@ -334,7 +339,7 @@ def test_scanners_on_sample_repo():
         assert "service_role" in by[(".env", 3)].title and by[(".env", 2)].is_false_positive
     if "semgrep" in names:
         assert by[("server/routes/calc.js", 5)].cwe == ["CWE-95"]
-        assert by[("server/routes/auth.js", 10)].title == "JWT signing secret in code"
+        assert "JWT signing secret in code" in {f.title for f in out if (f.file, f.line) == ("server/routes/auth.js", 10)}
     if "osv-scanner" in names:
         axios = next(f for f in out if f.package == "axios@0.21.1")
         assert axios.file == "package.json" and axios.fix_diff.startswith('- "axios": "^0.21.1"')
@@ -361,7 +366,7 @@ KEY = "sk-proj-" + "Tq7Wv2Lm9Xc4" * 4
 # One project holding a crafted positive and negative for every VibeGuard rule (§7, Phase 4).
 VIBE_FIXTURE = {
     # frontend-secret
-    ".env": f"VITE_OPENAI_API_KEY={KEY}\nVITE_SUPABASE_URL=https://abc.supabase.co\nVITE_SUPABASE_ANON_KEY=ANON\nOPENAI_API_KEY={KEY}\n",
+    ".env": f"VITE_OPENAI_API_KEY={KEY}\nVITE_SUPABASE_URL=https://abcdefghijklmnop.supabase.co\nVITE_SUPABASE_ANON_KEY=ANON\nOPENAI_API_KEY={KEY}\n",
     "src/lib/ai.ts": "const key = import.meta.env.VITE_OPENAI_API_KEY\n",
     "src/lib/supabase.ts": "export const s = createClient(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY)\n",
     "src/lib/openai.ts": "export const ai = new OpenAI({\n  apiKey: key,\n  dangerouslyAllowBrowser: true,\n})\n",
@@ -428,6 +433,73 @@ VIBE_FIXTURE = {
     # debug-in-prod
     ".env.production": "NODE_ENV=production\nDEBUG=true\n",
     ".env.development": "DEBUG=true\n",
+    # supabase-privilege-escalation, supabase-rpc-exposed, supabase-storage-open
+    "supabase/migrations/002_more.sql": (
+        "create function public.handle_new_user() returns trigger language plpgsql security definer as $$\nbegin\n"
+        "  insert into public.accounts (id, plan) values (new.id, new.raw_user_meta_data->>'plan');\n  return new;\nend;\n$$;\n"
+        "create trigger on_auth_user_created after insert on auth.users for each row execute function public.handle_new_user();\n"
+        "create function public.name_from_meta() returns trigger language plpgsql security definer as $$\nbegin\n"
+        "  new.display_name := new.raw_user_meta_data->>'full_name';\n  return new;\nend;\n$$;\n"
+        "create table public.accounts (id uuid primary key, plan text, display_name text);\n"
+        "alter table public.accounts enable row level security;\n"
+        "create policy \"own account\" on public.accounts for update to authenticated using ((select auth.uid()) = id);\n"
+        "create table public.settings (id uuid primary key, role text, theme text);\n"
+        "alter table public.settings enable row level security;\n"
+        "create policy \"own settings\" on public.settings for update to authenticated using (auth.uid() = id) "
+        "with check (auth.uid() = id and role = (select role from public.settings where id = auth.uid()));\n"
+        "create table public.teams (id uuid primary key, tier text, name text);\n"
+        "alter table public.teams enable row level security;\n"
+        "create policy \"own team\" on public.teams for update to authenticated using (auth.uid() = id);\n"
+        "revoke update on public.teams from authenticated;\ngrant update (name) on public.teams to authenticated;\n"
+        "create table public.user_roles (id uuid primary key, user_id uuid, role text);\n"
+        "alter table public.user_roles enable row level security;\n"
+        "create policy \"add own role\" on public.user_roles for insert to authenticated with check (auth.uid() = user_id);\n"
+        "create table public.docs (id uuid primary key, owner uuid);\n"
+        "alter table public.docs enable row level security;\n"
+        "create policy \"meta admins\" on public.docs for delete to authenticated using ((auth.jwt() -> 'user_metadata' ->> 'role') = 'admin');\n"
+        "create function public.wipe_user(target uuid) returns void language plpgsql security definer as $$\n"
+        "begin delete from public.docs where owner = target; end; $$;\n"
+        "create function public.wipe_mine() returns void language plpgsql security definer as $$\n"
+        "begin delete from public.docs where owner = auth.uid(); end; $$;\n"
+        "create function public.purge_old() returns void language plpgsql security definer as $$\n"
+        "begin delete from public.docs where owner is null; end; $$;\n"
+        "create function public.all_docs() returns setof public.docs language sql security definer as $$ select * from public.docs $$;\n"
+        "create function public.internal_job(x int) returns void language plpgsql security definer as $$\n"
+        "begin delete from public.docs; end; $$;\n"
+        "revoke execute on function public.internal_job(int) from public, anon, authenticated;\n"
+        "create function public.is_owner(d uuid) returns boolean language sql security definer as $$ select true $$;\n"
+        "create policy \"anyone deletes uploads\" on storage.objects for delete to authenticated using (bucket_id = 'uploads');\n"
+        "create policy \"own avatars\" on storage.objects for update to authenticated "
+        "using (bucket_id = 'avatars' and (select auth.uid())::text = (storage.foldername(name))[1]);\n"
+        "create policy \"anon drops\" on storage.objects for insert to anon with check (bucket_id = 'inbox');\n"),
+    # plaintext-password, jwt-no-expiry, mass-assignment
+    "server/routes/members.js": ('const user = rows[0]\nif (!user || user.password !== req.body.password) return res.sendStatus(401)\n'
+                                 'await db.insert({ email, password: req.body.password })\n'
+                                 'const token = jwt.sign({ id: user.id }, process.env.JWT_SECRET)\n'
+                                 'const ok = jwt.sign({ id: user.id }, process.env.JWT_SECRET, { expiresIn: "1h" })\n'
+                                 'const ok2 = jwt.sign({ id: user.id, exp: soon }, process.env.JWT_SECRET)\n'
+                                 'const me = jwt.verify(req.headers.authorization, process.env.JWT_SECRET)\n'
+                                 'await supabase.from("profiles").update(req.body).eq("id", me.id)\n'
+                                 'await supabase.from("profiles").update({ name: req.body.name }).eq("id", me.id)\n'),
+    "server/routes/hashed.js": ('await db.insert({ email, password: hashed })\nconst hashed = await bcrypt.hash(req.body.password, 12)\n'
+                                'if (!(await bcrypt.compare(req.body.password, user.password_hash))) fail()\n'),
+    "src/pages/Signup.tsx": "if (form.password !== form.confirmPassword) setError(\"no match\")\n",
+    # ai-open-proxy
+    "server/ai.js": ('export async function ask(req) {\n  return openai.chat.completions.create({\n    model: req.body.model,\n'
+                     '    messages: req.body.messages,\n  })\n}\n'),
+    "server/ai-safe.js": ('export async function ask(req) {\n  return openai.chat.completions.create({\n    model: "gpt-4o-mini",\n'
+                          '    messages: [{ role: "system", content: "Only summarise." }, { role: "user", content: req.body.text }],\n  })\n}\n'),
+    # webhook-unsigned
+    "server/webhooks/lemon.js": '// Lemon Squeezy webhook\nexport function handle(event) {\n  if (event.meta.event_name === "order_created") grantAccess(event)\n}\n',
+    "server/webhooks/paddle.js": ('// Paddle webhook\nexport async function handle(raw, sig) {\n  const event = await paddle.webhooks.unmarshal(raw, secret, sig)\n'
+                                  '  if (event.eventType === "transaction.completed") grantAccess(event)\n}\n'),
+    # role read from user_metadata
+    "src/pages/Staff.tsx": ('export const Staff = ({ user }) => {\n  const name = user.user_metadata.full_name\n'
+                            '  if (user.user_metadata.role === "admin") return <Panel />\n  return <p>{name}</p>\n}\n'),
+    # Python CORS
+    "api/main.py": ("app.add_middleware(CORSMiddleware, allow_origins=[\"*\"], allow_credentials=True)\n"
+                    "app.add_middleware(CORSMiddleware, allow_origins=[\"https://a.com\"], allow_credentials=True)\n"),
+    "api/flask_app.py": "CORS(app, supports_credentials=True)\nCORS(app, origins=[\"https://a.com\"], supports_credentials=True)\n",
 }
 VIBE_EXPECTED = {
     (".env", "frontend-secret:env-file"), ("src/lib/ai.ts", "frontend-secret:code-env"),
@@ -446,6 +518,19 @@ VIBE_EXPECTED = {
     ("server/routes/tools.js", "eval-user-input"), ("server/routes/tools.js", "eval-user-input:command"),
     ("server/routes/auth.js", "no-rate-limit:auth"), ("supabase/functions/summarize/index.ts", "no-rate-limit:ai"),
     ("server/routes/upload.js", "unrestricted-upload:any"), ("server/routes/upload.js", "unrestricted-upload:public"),
+    ("supabase/migrations/002_more.sql", "supabase-privilege-escalation"),
+    ("supabase/migrations/002_more.sql", "supabase-privilege-escalation:self-update"),
+    ("supabase/migrations/002_more.sql", "supabase-privilege-escalation:role-self-grant"),
+    ("supabase/migrations/002_more.sql", "supabase-privilege-escalation:metadata-policy"),
+    ("supabase/migrations/002_more.sql", "supabase-rpc-exposed"), ("supabase/migrations/002_more.sql", "supabase-rpc-exposed:job"),
+    ("supabase/migrations/002_more.sql", "supabase-rpc-exposed:reads"),
+    ("supabase/migrations/002_more.sql", "supabase-storage-open"), ("supabase/migrations/002_more.sql", "supabase-storage-open:upload"),
+    ("server/routes/members.js", "plaintext-password:compare"), ("server/routes/members.js", "plaintext-password:store"),
+    ("server/routes/members.js", "jwt-no-expiry"), ("server/routes/members.js", "mass-assignment"),
+    ("server/ai.js", "ai-open-proxy:messages"), ("server/ai.js", "ai-open-proxy:model"),
+    ("server/webhooks/lemon.js", "webhook-unsigned"),
+    ("src/pages/Staff.tsx", "supabase-privilege-escalation:metadata-code"),
+    ("api/main.py", "cors-wildcard:python-credentials"), ("api/flask_app.py", "cors-wildcard:python-credentials"),
 }
 
 
@@ -486,6 +571,33 @@ def test_vibe_rules():
     assert by[("src/pages/Search.tsx", "xss-sink", 4)].confidence == "Confirmed reachable"
     mutation = next(f for f in found if f.raw_rule_id == "vibe.client-only-auth:guarded-mutation")
     assert mutation.line == 5 and mutation.confidence == "Confirmed reachable" and "public.orders" in mutation.explanation
+    # the new rules: the right objects and lines, and the negatives stay quiet
+    ids = {f.raw_rule_id for f in found}
+    assert "vibe.supabase-privilege-escalation@public.handle_new_user" in ids  # 'plan' from sign-up metadata; 'full_name' is fine
+    signup = next(f for f in found if f.raw_rule_id == "vibe.supabase-privilege-escalation@public.handle_new_user")
+    assert signup.confidence == "Confirmed reachable" and signup.line == 3  # the trigger on auth.users runs it
+    assert {i.split("@")[1] for i in ids if i.startswith("vibe.supabase-privilege-escalation:self-update")} == {"public.accounts.plan"}
+    assert {i.split("@")[1] for i in ids if i.startswith("vibe.supabase-rpc-exposed")} == {"public.wipe_user", "public.purge_old", "public.all_docs"}
+    assert "fn=" not in str(ids) and any("public.wipe_user(uuid)" in f.fix_diff for f in found)  # REVOKE needs the argument types
+    assert {f.title for f in found if f.raw_rule_id.startswith("vibe.supabase-storage-open")} == {
+        "Any signed-in user can overwrite or delete files in the uploads bucket", "Anyone can upload files to the inbox bucket"}
+    assert {f.line for f in found if f.file == "server/routes/members.js" and "plaintext" in f.raw_rule_id} == {2, 3}
+    assert {f.line for f in found if f.raw_rule_id == "vibe.jwt-no-expiry"} == {4}
+    assert {f.line for f in found if f.raw_rule_id == "vibe.mass-assignment"} == {8}
+    assert {f.line for f in found if f.raw_rule_id == "vibe.supabase-privilege-escalation:metadata-code"} == {3}
+    assert {f.line for f in found if f.file == "api/main.py"} == {1} and {f.line for f in found if f.file == "api/flask_app.py"} == {1}
+    lemon = next(f for f in found if f.raw_rule_id == "vibe.webhook-unsigned")
+    assert lemon.title.startswith("Lemon Squeezy") and lemon.money_risk and "X-Signature" in lemon.fix_diff
+    pw = next(f for f in found if f.raw_rule_id == "vibe.plaintext-password:compare")
+    assert "await bcrypt.compare(req.body.password, user.password_hash)" in pw.fix_diff
+    assert "{ expiresIn: \"1h\" })" in next(f for f in found if f.raw_rule_id == "vibe.jwt-no-expiry").fix_diff
+    # connections: the open table is confirmed (the app ships the URL and anon key), with a read-only check and the browser query
+    orders = next(f for f in found if f.raw_rule_id == "vibe.supabase-rls-off@public.orders")
+    assert orders.confidence == "Confirmed reachable"
+    assert any("curl 'https://abcdefghijklmnop.supabase.co/rest/v1/orders?select=*&limit=1'" in e for e in orders.evidence)
+    assert any("src/pages/Admin.tsx:5" in e for e in orders.evidence)
+    env_key = next(f for f in found if f.raw_rule_id == "vibe.frontend-secret:env-file")
+    assert "Read by browser code at src/lib/ai.ts:1" in env_key.evidence
     sql = next(f for f in found if f.raw_rule_id == "vibe.sql-string-concat")
     assert sql.fix_diff.endswith('db.query("SELECT * FROM users WHERE email = $1", [req.body.email])')
     xss = by[("src/pages/Search.tsx", "xss-sink", 4)]
@@ -517,6 +629,41 @@ def test_rate_limit_and_client_code_negatives():
     assert not is_browser_code("src/lib/fns.ts", "export const f = createServerFn().handler(() => 1)", next_app=False)
 
 
+def test_missing_auth_and_passed_checks():
+    """App-level reasoning: tokens issued but never verified; server functions writing with the admin client; what passed."""
+    import shutil
+    if not shutil.which("ast-grep"):
+        return print("   (ast-grep not installed, skipped)")
+    api = {"server/index.js": 'app.use("/api/auth", require("./routes/auth"))\napp.use("/api/items", require("./routes/items"))\n',
+           "server/routes/auth.js": 'router.post("/login", (req, res) => res.json({ token: jwt.sign({ id: 1 }, process.env.S, { expiresIn: "1h" }) }))\n',
+           "server/routes/items.js": 'router.get("/", (req, res) => res.json(items))\nrouter.delete("/:id", (req, res) => drop(req.params.id))\n',
+           "src/lib/fns.ts": ('export const purge = createServerFn({ method: "POST" }).handler(async () => {\n'
+                              '  await supabaseAdmin.from("items").delete().neq("id", 0)\n})\n'
+                              'export const guarded = createServerFn({ method: "POST" }).handler(async () => {\n'
+                              '  const { userId } = await requireUser()\n  await supabaseAdmin.from("items").delete().eq("owner", userId)\n})\n'
+                              'export const list = createServerFn({ method: "GET" }).handler(async () => supabaseAdmin.from("items").select("*"))\n')}
+    _, found = _vibe(api)
+    unchecked = [f for f in found if f.raw_rule_id == "vibe.missing-auth"]
+    assert len(unchecked) == 1 and "GET /api/items" in unchecked[0].evidence[0] and "DELETE /api/items/:id" in unchecked[0].evidence[0]
+    assert "/login" not in unchecked[0].evidence[0]
+    assert [f.line for f in found if f.raw_rule_id == "vibe.missing-auth:admin-server-fn"] == [1]  # guarded and read-only ones pass
+    _, found = _vibe(api | {"server/middleware.js": "module.exports = (req, res, next) => { req.user = jwt.verify(req.headers.authorization, process.env.S); next() }\n"})
+    assert not [f for f in found if f.raw_rule_id == "vibe.missing-auth"]
+    # a clean Supabase project says what it checked
+    from scanners.custom_rules import VibeRules
+    root = Path(tempfile.mkdtemp())
+    (root / "supabase/migrations").mkdir(parents=True)
+    (root / "supabase/migrations/001.sql").write_text(
+        "create table public.notes (id uuid primary key, user_id uuid, body text);\nalter table public.notes enable row level security;\n"
+        "create policy \"own\" on public.notes for all to authenticated using ((select auth.uid()) = user_id);\n")
+    (root / "src").mkdir()
+    (root / "src/App.tsx").write_text("export const App = () => <p>hi</p>\n")
+    v = VibeRules()
+    assert v.run(root, Path(tempfile.mkdtemp())) == []
+    assert "Row-Level Security is on for your one table, with no wide-open policies" in v.passed
+    assert "No secret keys in browser code or public env vars" in v.passed
+
+
 def test_supabase_sql_reader():
     from scanners import supabase_sql as q
     sql = ("-- comment ; with a semicolon\ncreate table if not exists \"public\".\"Items\" (id int);\n"
@@ -525,12 +672,16 @@ def test_supabase_sql_reader():
            "CREATE POLICY \"x\" ON public.items AS RESTRICTIVE FOR UPDATE TO anon USING (true);\n"
            "create policy y on items for insert to authenticated with check (auth.uid() is not null);\n"
            "create table public.secret (id int);\nrevoke all on public.secret from anon, authenticated;\n")
-    t = q.read([("m.sql", sql)])
+    t = q.read([("m.sql", sql)]).tables
     items = t["public.items"]
     assert items.rls and items.line == 2 and set(items.policies) == {"x", "y"}
     assert q.who(items.policies["x"]) is None  # restrictive policies only narrow access
     assert q.who(items.policies["y"]) == "signed-in"
     assert not q.exposed(t["public.secret"])  # revoked from the API roles
+    fns = q.read([("f.sql", "create or replace function public.f(target uuid, note text default null) returns void language plpgsql "
+                            "security definer as $$ begin delete from x where id = target; end $$;\n"
+                            "revoke execute on function public.f(uuid, text) from public, anon;\n")]).functions
+    assert fns["public.f"].args == "uuid, text" and fns["public.f"].definer and fns["public.f"].revoked == {"public", "anon"}
 
 
 def test_zizmor_bandit_lockfile_lint():

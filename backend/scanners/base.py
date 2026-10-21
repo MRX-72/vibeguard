@@ -32,6 +32,7 @@ class Scanner:
     label = ""  # the user-facing step name
     timeout = 180
     checked = ""  # what this run looked at, for the report ("412 source files"); one instance per scan
+    passed = ()  # checks that ran and found nothing wrong, for the report's "what's already right" list
 
     def __init__(self, verify_secrets=False):
         self.verify_secrets = verify_secrets  # the user opted in to testing found keys with their providers (trufflehog)

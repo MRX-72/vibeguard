@@ -1,0 +1,12 @@
+id: ai-open-proxy-model
+language: tsx
+severity: warning
+message: The caller picks which AI model you pay for
+rule:
+  kind: pair
+  regex: '^model\s*:\s*((req|request)\.body\.\w+|body\.\w*model\w*|input\.\w*model\w*|data\.\w*model\w*)'
+  inside:
+    kind: call_expression
+    regex: '(chat\.completions\.create|responses\.create|messages\.create|streamText|generateText|generateObject|streamObject)\s*\('
+    stopBy: end
+metadata: {vibe: ai-open-proxy, variant: model, confidence: Likely}
