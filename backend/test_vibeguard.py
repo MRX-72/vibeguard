@@ -190,6 +190,22 @@ def test_trufflehog_masks_every_part_and_is_opt_in():
     assert key_id[:16] not in out and secret[:16] not in out
 
 
+def test_trufflehog_never_verifies_against_hosts_from_the_code():
+    """SSRF guard: only fixed-API detectors run, so a planted internal URL is never contacted."""
+    import subprocess
+    from scanners.trufflehog import DETECTORS, TruffleHog
+    if not TruffleHog().available():
+        return print("   (trufflehog not installed, skipped)")
+    root = Path(tempfile.mkdtemp())
+    (root / "config.js").write_text('const db = "postgres://admin:hunter2pass@169.254.169.254:80/db"\n'
+                                    'const groq = "gsk_' + "Vq3TzR8wLm2Kx9Pa" * 3 + 'Zt7Q"\n')
+    r = subprocess.run(["trufflehog", "filesystem", str(root), "--json", "--no-update", "--no-verification",
+                        "--include-detectors", ",".join(DETECTORS)], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr[-300:]  # every allowlisted name is a real detector
+    found = {json.loads(line)["DetectorName"] for line in r.stdout.splitlines() if line.startswith("{")}
+    assert found == {"Groq"}, found
+
+
 def test_lockfile_graphs_agree():
     """pnpm (v6, v9) and yarn (v1, berry) lockfiles give the same runtime/build split as package-lock, aliases included."""
     from scanners import npm_deps
