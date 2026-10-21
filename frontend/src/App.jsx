@@ -76,17 +76,15 @@ export default function App() {
 
 export function Logo({ compact }) {
   return (
-    <span className="flex items-center gap-3">
-      <span className="grid size-9 place-items-center rounded-[10px] bg-accent text-accent-ink shadow-[0_0_0_1px_rgba(114,216,168,0.25),0_8px_24px_-8px_rgba(114,216,168,0.45)]">
-        <svg viewBox="0 0 24 24" className="size-[19px]" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+    <span className="flex items-center gap-2.5">
+      <span className="heat-ramp grid size-8 place-items-center rounded-[9px] text-ink">
+        <svg viewBox="0 0 24 24" className="size-[18px]" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
           <path d="M12 3 4.5 6v5.5c0 4.6 3.1 8.2 7.5 9.5 4.4-1.3 7.5-4.9 7.5-9.5V6L12 3Z" />
           <path d="m8.8 12.2 2.2 2.2 4.3-4.4" />
         </svg>
       </span>
-      <span className="text-[19px] font-semibold tracking-[-0.02em]">
-        vibe<span className="font-normal text-muted">guard</span>
-      </span>
-      {!compact && <span className="rounded-md border border-line-strong px-1.5 py-0.5 font-mono text-[10.5px] tracking-[0.16em] text-faint">BETA</span>}
+      <span className="text-[19px] font-semibold tracking-[-0.025em]">VibeGuard</span>
+      {!compact && <span className="rounded-md bg-raised px-1.5 py-0.5 text-[11px] font-medium text-faint">Beta</span>}
     </span>
   )
 }
@@ -96,14 +94,13 @@ function Sidebar({ page }) {
   return (
     <aside className="sticky top-0 hidden h-dvh flex-col border-r border-line bg-side px-4 py-6 lg:flex print:hidden">
       <a href="#/" className="px-2"><Logo /></a>
-      <p className="eyebrow mt-10 px-3">Workspace</p>
-      <nav className="mt-3 flex flex-col gap-1" aria-label="Sections">
+      <nav className="mt-10 flex flex-col gap-0.5" aria-label="Sections">
         <NavItem href="#/" icon={Activity} active={page === 'overview'}>Overview</NavItem>
         <NavItem href="#/history" icon={FileText} active={page === 'history'} badge={count || null}>Scan history</NavItem>
       </nav>
       <div className="mt-auto rounded-xl border border-line bg-surface p-4">
         <p className="flex items-center gap-2.5 text-[14px] font-medium">
-          <Lock className="size-4 text-accent" strokeWidth={1.75} /> Your code isn't kept
+          <Lock className="size-4 text-fix" strokeWidth={1.75} /> Your code isn't kept
         </p>
         <p className="mt-1.5 text-[13px] leading-relaxed text-faint">
           Submitted files are deleted when the scan ends. Reports stay until the server restarts.
@@ -121,13 +118,13 @@ function NavItem({ href, icon: Icon, active, badge, children }) {
     <a
       href={href}
       aria-current={active ? 'page' : undefined}
-      className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-[15px] transition-colors ${
-        active ? 'bg-accent/[0.09] text-accent' : 'text-muted hover:bg-raised hover:text-fg'
+      className={`relative flex items-center gap-3 rounded-lg px-3 py-2.5 text-[15px] transition-colors ${
+        active ? 'bg-raised text-fg' : 'text-muted hover:bg-raised/60 hover:text-fg'
       }`}
     >
       <Icon className="size-[18px]" strokeWidth={1.75} />
       {children}
-      {badge != null && <span className={`ml-auto font-mono text-xs tabular-nums ${active ? 'text-accent/80' : 'text-faint'}`}>{badge}</span>}
+      {badge != null && <span className="ml-auto text-[13px] text-faint tabular-nums">{badge}</span>}
     </a>
   )
 }
@@ -136,14 +133,14 @@ function MobileTab({ href, active, children }) {
   return (
     <a href={href} className={`relative px-3 py-3 text-sm ${active ? 'text-fg' : 'text-muted'}`}>
       {children}
-      {active && <span className="absolute inset-x-3 -bottom-px h-0.5 rounded-full bg-accent" />}
+      {active && <span className="absolute inset-x-3 -bottom-px h-0.5 rounded-full bg-hot" />}
     </a>
   )
 }
 
 const STATUS = {
   checking: ['bg-faint', 'Checking scanner…'],
-  ready: ['bg-accent', 'All systems normal'],
+  ready: ['bg-fix', 'Scanner ready'],
   waking: ['bg-med animate-pulse', 'Waking the scanner…'],
   down: ['bg-crit', 'Scanner offline'],
 }
@@ -151,7 +148,7 @@ const STATUS = {
 function Status({ state }) {
   const [dot, text] = STATUS[state]
   return (
-    <span className="flex items-center gap-2 font-mono text-[12.5px] text-muted" role="status">
+    <span className="flex items-center gap-2 text-[13.5px] text-muted" role="status">
       <span className={`size-2 rounded-full ${dot}`} />
       <span className="hidden sm:inline">{text}</span>
     </span>
@@ -179,8 +176,7 @@ function useHealth(tick) {
 function HistoryPage({ tick }) {
   return (
     <section className="pt-10 sm:pt-14">
-      <p className="eyebrow">Activity</p>
-      <h1 className="mt-3 text-3xl font-semibold tracking-[-0.03em]">Scan history</h1>
+      <h1 className="text-[2rem] font-semibold tracking-[-0.03em]">Scan history</h1>
       <p className="mt-2 max-w-[60ch] text-muted">Every scan started in this browser, newest first. Reports are kept until the server restarts.</p>
       <div className="mt-8 rounded-2xl border border-line bg-surface px-5 py-2 sm:px-6">
         <ScanList tick={tick} limit={20} />
@@ -234,7 +230,7 @@ function Failed({ message }) {
       </div>
       <h1 className="mt-6 text-2xl font-semibold tracking-tight">The scan didn't finish</h1>
       <p className="mt-3 text-muted">{message}</p>
-      <a href="#/" className="mt-8 inline-flex rounded-lg bg-accent px-4 py-2.5 text-sm font-semibold text-accent-ink hover:brightness-110">
+      <a href="#/" className="mt-8 inline-flex rounded-lg bg-hot px-4 py-2.5 text-sm font-semibold text-ink hover:bg-white">
         Start a new scan
       </a>
     </section>

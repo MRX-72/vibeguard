@@ -1,35 +1,57 @@
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "Geist", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --font-sans: "Bricolage Grotesque", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
 
-  /* deep green-black, one mint accent; severity colours carry meaning only */
-  --color-ink: #0e1412;
-  --color-side: #0b100e;
-  --color-surface: #131b18;
-  --color-raised: #19231f;
-  --color-line: #222d29;
-  --color-line-strong: #2d3a35;
-  --color-fg: #e7ede9;
-  --color-muted: #96a49d;
-  --color-faint: #66746d;
-  --color-accent: #72d8a8;
-  --color-accent-ink: #08130e;
+  /* violet-black base; colour means heat (risk) and nothing else */
+  --color-ink: #110e18;
+  --color-side: #0d0b13;
+  --color-surface: #18141f;
+  --color-raised: #201a2a;
+  --color-line: #2a2336;
+  --color-line-strong: #3a3148;
+  --color-fg: #efeaf5;
+  --color-muted: #a59db3;
+  --color-faint: #746b84;
+  --color-hot: #f6f1ff; /* "white-hot": primary actions */
 
-  --color-crit: #f0605c;
-  --color-high: #f2924a;
-  --color-med: #e6bc4a;
-  --color-low: #63a8ee;
-  --color-fix: #72d8a8;
+  /* severity is a thermal ramp, cool to hot */
+  --color-low: #6f8cff;
+  --color-med: #f4b740;
+  --color-high: #ff7a3c;
+  --color-crit: #ff3e6c;
+  --color-fix: #56d2bd; /* safe, fixed, already right */
+  --color-accent: #56d2bd;
+  --color-accent-ink: #0a1a17;
 }
 
-.eyebrow {
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-  color: var(--color-faint);
+@layer base {
+  html {
+    color-scheme: dark;
+    background: var(--color-ink);
+    color: var(--color-fg);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    font-optical-sizing: auto;
+  }
+  body {
+    font-family: var(--font-sans);
+    min-height: 100dvh;
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-hot);
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
+  ::selection {
+    background: color-mix(in oklab, var(--color-crit) 35%, transparent);
+  }
+}
+
+/* the thermal ramp, used where heat is the information (logo mark, heat scale) */
+.heat-ramp {
+  background: linear-gradient(90deg, var(--color-low), #b06cff 30%, var(--color-crit) 58%, var(--color-high) 78%, var(--color-med));
 }
 
 @keyframes rise {
@@ -37,22 +59,15 @@
   to { opacity: 1; transform: none; }
 }
 
-html {
-  color-scheme: dark;
-  background: var(--color-ink);
-  color: var(--color-fg);
-  -webkit-font-smoothing: antialiased;
-  text-rendering: optimizeLegibility;
+/* the hero's one moment: a scan line passes once and the risky lines heat up as it reaches them */
+@keyframes sweep {
+  from { top: 0; opacity: 1; }
+  90% { opacity: 1; }
+  to { top: 100%; opacity: 0; }
 }
-
-body {
-  font-family: var(--font-sans);
-  min-height: 100dvh;
-}
-
-:focus-visible {
-  outline: 2px solid var(--color-accent);
-  outline-offset: 2px;
+@keyframes heat-up {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 /* Save as PDF: a light page, every card expanded (Report opens them), no buttons */
@@ -61,11 +76,12 @@ body {
     --color-ink: #ffffff;
     --color-side: #ffffff;
     --color-surface: #ffffff;
-    --color-raised: #f3f3f5;
-    --color-line: #d9d9de;
-    --color-fg: #111114;
-    --color-muted: #3f4048;
-    --color-faint: #6b6e78;
+    --color-raised: #f3f2f6;
+    --color-line: #dcd9e2;
+    --color-line-strong: #c9c5d2;
+    --color-fg: #15121b;
+    --color-muted: #423d4c;
+    --color-faint: #6c6576;
   }
   html { color-scheme: light; }
   figure, summary { break-inside: avoid; }
@@ -77,6 +93,7 @@ body {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
+    animation-delay: 0ms !important;
     transition-duration: 0.01ms !important;
   }
 }

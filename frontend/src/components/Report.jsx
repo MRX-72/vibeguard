@@ -1,7 +1,7 @@
 import { ArrowRight, Check, Code, Database, FileDown, KeyRound, Package, Printer, ShieldAlert } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { BASE } from '../api'
-import { GRADE_COLOR, ORDER, SEV } from '../severity'
+import { GRADE_COLOR, GRADE_TILE, ORDER, SEV } from '../severity'
 import FindingRow from './FindingRow'
 
 // One section per kind of problem, so a founder sees "your keys" apart from "your dependencies".
@@ -11,10 +11,6 @@ const GROUPS = [
   { kind: 'code', title: 'Your code', icon: Code },
   { kind: 'dependency', title: 'Dependencies', icon: Package },
 ]
-const GRADE_TILE = {
-  A: 'border-accent/30 bg-accent/[0.07]', B: 'border-low/30 bg-low/[0.07]', C: 'border-med/30 bg-med/[0.07]',
-  D: 'border-high/30 bg-high/[0.07]', F: 'border-crit/30 bg-crit/[0.07]',
-}
 const when = new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' })
 
 export default function Report({ report }) {
@@ -39,29 +35,32 @@ export default function Report({ report }) {
             <span className={`text-[5.5rem] leading-none font-semibold tracking-[-0.06em] sm:text-[7rem] ${GRADE_COLOR[grade]}`}>{grade}</span>
           </div>
           <div className="min-w-0 flex-1">
-            <p className="eyebrow truncate">Security report · {scan.source_label || scan.source_type} · {when.format(new Date(scan.created_at))}</p>
-            <h1 className="mt-3 max-w-[30ch] text-2xl leading-snug font-semibold tracking-[-0.025em] text-pretty sm:text-[1.9rem]">{summary?.verdict}</h1>
+            <p className="truncate text-[14px] text-faint">
+              <span className="text-muted">{scan.source_label || scan.source_type}</span>, scanned {when.format(new Date(scan.created_at))}
+            </p>
+            <h1 className="mt-3 max-w-[30ch] text-2xl leading-snug font-semibold tracking-[-0.025em] text-balance sm:text-[1.9rem]">{summary?.verdict}</h1>
             <div className="mt-5 flex flex-wrap items-center gap-x-5 gap-y-3">
-              <p className="font-mono text-sm text-muted">
-                Risk <span className="text-lg font-medium text-fg tabular-nums">{score}</span><span className="text-faint"> / 100</span>
+              <p className="text-[15px] text-muted">
+                Risk score <span className="text-lg font-semibold text-fg tabular-nums">{score}</span><span className="text-faint">/100</span>
               </p>
               <ul className="flex flex-wrap gap-2">
                 {ORDER.map((s) => (
                   <li key={s} className={`flex items-center gap-2 rounded-md px-2.5 py-1 text-[13px] ${counts[s] ? SEV[s].soft : 'bg-raised'}`}>
                     <span className={`size-1.5 rounded-full ${counts[s] ? SEV[s].bg : 'bg-faint'}`} />
-                    <span className={counts[s] ? 'text-fg' : 'text-faint'}><span className="font-mono tabular-nums">{counts[s]}</span> {s}</span>
+                    <span className={counts[s] ? 'text-fg' : 'text-faint'}><span className="tabular-nums">{counts[s]}</span> {s}</span>
                   </li>
                 ))}
               </ul>
             </div>
           </div>
         </div>
+        {shown.length > 0 && <HeatStrip findings={shown} />}
         <Exports scanId={scan.id} />
       </header>
 
       {top.length > 0 && (
         <section className="pt-12">
-          <SectionTitle icon={ShieldAlert} eyebrow="Start here">This could hurt you</SectionTitle>
+          <SectionTitle icon={ShieldAlert}>Fix these first</SectionTitle>
           <ol className="mt-5 grid gap-4 md:grid-cols-3">
             {top.map((f, i) => (
               <li key={f.id}>
@@ -71,13 +70,13 @@ export default function Report({ report }) {
                   className={`group relative flex h-full w-full flex-col gap-2.5 overflow-hidden rounded-2xl border border-line bg-surface p-5 text-left ring-1 ring-transparent transition-colors hover:bg-raised ${SEV[f.severity].hover}`}
                 >
                   <span className={`absolute inset-x-0 top-0 h-0.5 ${SEV[f.severity].bg}`} aria-hidden />
-                  <span className="flex items-center justify-between font-mono text-xs">
-                    <span className={SEV[f.severity].text}>{f.severity.toUpperCase()}</span>
-                    <span className="text-faint">0{i + 1}</span>
+                  <span className="flex items-center justify-between text-[14px]">
+                    <span className={`font-medium ${SEV[f.severity].text}`}>{f.severity}</span>
+                    <span className="text-faint tabular-nums">{i + 1} of {top.length}</span>
                   </span>
                   <span className="text-[16px] leading-snug font-medium">{f.title}</span>
                   <span className="text-sm leading-relaxed text-muted">{f.impact}</span>
-                  <span className="mt-auto flex items-center gap-1.5 pt-2 text-sm text-faint group-hover:text-accent">
+                  <span className="mt-auto flex items-center gap-1.5 pt-2 text-sm text-faint group-hover:text-fg">
                     See the fix <ArrowRight className="size-3.5 transition-transform group-hover:translate-x-0.5" />
                   </span>
                 </button>
@@ -88,7 +87,7 @@ export default function Report({ report }) {
       )}
 
       {shown.length === 0 && (
-        <section className="mt-10 rounded-2xl border border-accent/25 bg-accent/[0.05] p-6 sm:p-8">
+        <section className="mt-10 rounded-2xl border border-fix/25 bg-fix/[0.05] p-6 sm:p-8">
           <h2 className="text-xl font-semibold tracking-tight">No major issues found</h2>
           <p className="mt-2 max-w-[62ch] leading-relaxed text-muted">
             Nothing in what we checked needs fixing. That isn't a guarantee: see below for what was checked, and scan again after big changes.
@@ -111,7 +110,7 @@ export default function Report({ report }) {
           <ul className="mt-5 grid gap-x-8 gap-y-3 rounded-2xl border border-line bg-surface p-5 sm:p-6 md:grid-cols-2">
             {passed.map((p) => (
               <li key={p} className="flex items-start gap-3 text-[15px] leading-snug text-muted">
-                <span className="mt-0.5 grid size-5 shrink-0 place-items-center rounded-md bg-accent/10 text-accent"><Check className="size-3.5" strokeWidth={2.5} /></span>
+                <span className="mt-0.5 grid size-5 shrink-0 place-items-center rounded-md bg-fix/12 text-fix"><Check className="size-3.5" strokeWidth={2.5} /></span>
                 {p}
               </li>
             ))}
@@ -132,12 +131,12 @@ export default function Report({ report }) {
       )}
 
       <section className="mt-14 rounded-2xl border border-line bg-surface p-5 text-sm leading-relaxed sm:p-7">
-        <p className="eyebrow">What we checked</p>
+        <h2 className="text-[15px] font-semibold">What we checked</h2>
         <ul className="mt-4 grid gap-x-10 gap-y-2.5 md:grid-cols-2">
           {checked.map((s) => (
             <li key={s.key} className="flex items-baseline justify-between gap-4 border-b border-line pb-2.5">
               <span className="text-muted">{s.label}</span>
-              <span className="truncate text-right font-mono text-xs text-faint">{s.note}{s.checked ? ` · ${s.checked}` : ''}</span>
+              <span className="truncate text-right text-[13px] text-faint">{s.note}{s.checked ? ` in ${s.checked}` : ''}</span>
             </li>
           ))}
         </ul>
@@ -152,15 +151,35 @@ export default function Report({ report }) {
   )
 }
 
-function SectionTitle({ icon: Icon, eyebrow, count, children }) {
+function SectionTitle({ icon: Icon, count, children }) {
   return (
-    <div>
-      {eyebrow && <p className="eyebrow mb-2">{eyebrow}</p>}
-      <h2 className="flex items-center gap-3 text-xl font-semibold tracking-[-0.02em]">
-        <Icon className="size-5 text-accent" strokeWidth={1.75} />
-        {children}
-        {count != null && <span className="rounded-md border border-line px-1.5 py-0.5 font-mono text-xs font-normal text-faint tabular-nums">{count}</span>}
-      </h2>
+    <h2 className="flex items-center gap-3 text-xl font-semibold tracking-[-0.02em]">
+      <Icon className="size-5 text-muted" strokeWidth={1.75} />
+      {children}
+      {count != null && <span className="text-[15px] font-normal text-faint tabular-nums">{count}</span>}
+    </h2>
+  )
+}
+
+// Every finding as one segment, hottest first: the shape of the risk at a glance, and a way in to each finding.
+function HeatStrip({ findings }) {
+  const sorted = [...findings].sort((a, b) => ORDER.indexOf(a.severity) - ORDER.indexOf(b.severity))
+  return (
+    <div className="mt-7">
+      <p className="mb-2.5 text-[13px] text-faint">Each mark is one finding, hottest first. Select one to open it.</p>
+      <ol className="flex h-7 gap-[3px]" aria-label="Findings by severity">
+        {sorted.map((f) => (
+          <li key={f.id} className="min-w-[4px] flex-1">
+            <button
+              type="button"
+              onClick={() => openFinding(f.id)}
+              title={`${f.severity}: ${f.title}`}
+              aria-label={`${f.severity}: ${f.title}`}
+              className={`block h-full w-full rounded-[3px] opacity-85 transition-[opacity,transform] hover:-translate-y-0.5 hover:opacity-100 focus-visible:opacity-100 ${SEV[f.severity].bg}`}
+            />
+          </li>
+        ))}
+      </ol>
     </div>
   )
 }
@@ -169,6 +188,7 @@ function Exports({ scanId }) {
   const action = 'flex items-center gap-2 rounded-lg border border-line-strong px-3.5 py-2 text-sm text-muted transition-colors hover:bg-raised hover:text-fg'
   return (
     <div className="mt-7 flex flex-wrap gap-2.5 border-t border-line pt-6 print:hidden">
+      <span className="mr-1 self-center text-[14px] text-faint">Export</span>
       <a className={action} href={`${BASE}/scan/${scanId}/report.md`} download><FileDown className="size-4" strokeWidth={1.75} />Markdown</a>
       <a className={action} href={`${BASE}/scan/${scanId}/report.sarif`} download title="For GitHub code scanning"><FileDown className="size-4" strokeWidth={1.75} />SARIF</a>
       <button type="button" className={action} onClick={printReport}><Printer className="size-4" strokeWidth={1.75} />Save as PDF</button>

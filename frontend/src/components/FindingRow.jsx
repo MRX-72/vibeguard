@@ -17,11 +17,13 @@ export default function FindingRow({ finding: f, index }) {
       <details className="group relative overflow-hidden rounded-xl border border-line bg-surface transition-colors open:border-line-strong">
         <span className={`absolute inset-y-0 left-0 w-[3px] ${f.is_false_positive ? 'bg-line' : sev.bg}`} aria-hidden />
         <summary className="flex cursor-pointer list-none flex-col gap-1.5 py-4 pr-5 pl-6 hover:bg-raised/60 sm:flex-row sm:items-center sm:gap-4 [&::-webkit-details-marker]:hidden">
-          <span className={`w-[4.75rem] shrink-0 font-mono text-[11.5px] tracking-[0.08em] ${f.is_false_positive ? 'text-faint' : sev.text}`}>{f.severity.toUpperCase()}</span>
+          <span className={`flex w-[5.5rem] shrink-0 items-center gap-2 text-[14px] font-medium ${f.is_false_positive ? 'text-faint' : sev.text}`}>
+            <span className={`size-2 rounded-full ${f.is_false_positive ? 'bg-faint' : sev.bg}`} aria-hidden />{f.severity}
+          </span>
           <span className="flex-1 text-[15.5px] font-medium">
             {f.title}
             {f.money_risk && !f.is_false_positive && (
-              <span className="ml-2 inline-flex translate-y-[-1px] rounded bg-med/10 px-1.5 py-0.5 align-middle text-xs font-medium text-med" title="Could run up a bill or drain an API quota">
+              <span className="ml-2 inline-flex translate-y-[-1px] rounded-md border border-line-strong px-1.5 py-0.5 align-middle text-xs font-medium text-muted" title="Could run up a bill or drain an API quota">
                 $ risk
               </span>
             )}
@@ -115,7 +117,7 @@ function Code({ label, code, diff, start, from, to, copy }) {
   const numbered = start > 0
   return (
     <figure>
-      <figcaption className="mb-2 flex items-center justify-between gap-3 font-mono text-[12.5px] break-all text-faint">
+      <figcaption className={`mb-2 flex items-center justify-between gap-3 break-all ${diff ? 'text-sm text-muted' : 'font-mono text-[12.5px] text-faint'}`}>
         {label}
         {copy && <Copy text={copy} />}
       </figcaption>

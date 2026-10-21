@@ -52,17 +52,17 @@ export default function NewScan({ onSubmit }) {
   }
 
   return (
-    <form onSubmit={submit} className="flex flex-col rounded-2xl border border-line bg-surface p-5 sm:p-7">
-      <div className="flex items-start justify-between gap-4">
+    <form id="new-scan" onSubmit={submit} className="flex scroll-mt-28 flex-col rounded-2xl border border-line bg-surface p-5 sm:p-7">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <p className="eyebrow">New scan</p>
-          <h2 className="mt-2 text-xl font-semibold tracking-[-0.02em]">What are we looking at?</h2>
+          <h2 className="text-xl font-semibold tracking-[-0.02em]">New scan</h2>
+          <p className="mt-1 text-[15px] text-muted">Paste a file, upload a zip, or link a public GitHub repo.</p>
         </div>
         <button
           type="button"
           disabled={!!busy}
           onClick={() => send('demo')}
-          className="flex shrink-0 items-center gap-2 rounded-lg border border-line-strong px-3.5 py-2 text-sm text-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-50"
+          className="flex shrink-0 items-center gap-2 self-start rounded-lg border border-line-strong px-3.5 py-2 text-sm text-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-50"
         >
           {busy === 'demo' ? <LoaderCircle className="size-4 animate-spin" /> : <Play className="size-3.5 fill-current" strokeWidth={1.5} />}
           Try the demo app
@@ -79,11 +79,11 @@ export default function NewScan({ onSubmit }) {
             aria-selected={tab === id}
             aria-controls="scan-panel"
             onClick={() => { setTab(id); setError(null) }}
-            className={`relative flex shrink-0 items-center gap-2 px-2.5 pt-1 pb-3.5 text-[14px] transition-colors sm:px-3 sm:text-[15px] ${tab === id ? 'text-accent' : 'text-muted hover:text-fg'}`}
+            className={`relative flex shrink-0 items-center gap-2 px-2.5 pt-1 pb-3.5 text-[14px] transition-colors sm:px-3 sm:text-[15px] ${tab === id ? 'text-fg' : 'text-muted hover:text-fg'}`}
           >
             <Icon className="hidden size-[18px] sm:block" strokeWidth={1.75} />
             {label}
-            {tab === id && <span className="absolute inset-x-1 -bottom-px h-0.5 rounded-full bg-accent" />}
+            {tab === id && <span className="absolute inset-x-1 -bottom-px h-0.5 rounded-full bg-hot" />}
           </button>
         ))}
       </div>
@@ -97,11 +97,11 @@ export default function NewScan({ onSubmit }) {
             onDragLeave={() => setDragging(false)}
             onDrop={(e) => { e.preventDefault(); setDragging(false); pickFile(e.dataTransfer.files[0]) }}
             className={`flex min-h-[260px] cursor-pointer flex-col items-center justify-center gap-3 rounded-xl border border-dashed px-4 text-center transition-colors ${
-              dragging ? 'border-accent bg-accent/[0.05]' : 'border-line-strong bg-ink hover:border-faint'
+              dragging ? 'border-hot bg-hot/[0.04]' : 'border-line-strong bg-ink hover:border-faint'
             }`}
           >
             <input type="file" accept=".zip,application/zip" className="sr-only" onChange={(e) => pickFile(e.target.files[0])} />
-            <span className="grid size-11 place-items-center rounded-xl border border-line bg-surface text-accent">
+            <span className="grid size-11 place-items-center rounded-xl border border-line bg-surface text-muted">
               <CloudUpload className="size-5" strokeWidth={1.75} />
             </span>
             {file ? (
@@ -121,7 +121,7 @@ export default function NewScan({ onSubmit }) {
         {tab === 'github' && (
           <div className="flex min-h-[260px] flex-col justify-center gap-3 rounded-xl border border-line bg-ink px-5 py-8">
             <label className="text-sm text-muted" htmlFor="repo">Public repository URL</label>
-            <div className="flex items-center gap-3 rounded-lg border border-line-strong bg-surface px-3.5 focus-within:border-accent/60">
+            <div className="flex items-center gap-3 rounded-lg border border-line-strong bg-surface px-3.5 focus-within:border-faint">
               <FolderGit2 className="size-[18px] shrink-0 text-faint" strokeWidth={1.75} />
               <input
                 id="repo"
@@ -140,8 +140,8 @@ export default function NewScan({ onSubmit }) {
 
       <label className="mt-5 flex cursor-pointer items-start gap-3 text-sm">
         <input type="checkbox" checked={verify} onChange={(e) => setVerify(e.target.checked)} className="peer sr-only" />
-        <span className="mt-0.5 grid size-[18px] shrink-0 place-items-center rounded-[5px] border border-line-strong bg-ink transition-colors peer-checked:border-accent peer-checked:bg-accent peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-accent">
-          {verify && <svg viewBox="0 0 12 12" className="size-3 text-accent-ink"><path d="m2.5 6.2 2.2 2.2 4.8-4.9" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>}
+        <span className="mt-0.5 grid size-[18px] shrink-0 place-items-center rounded-[5px] border border-line-strong bg-ink transition-colors peer-checked:border-hot peer-checked:bg-hot peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-hot">
+          {verify && <svg viewBox="0 0 12 12" className="size-3 text-ink"><path d="m2.5 6.2 2.2 2.2 4.8-4.9" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>}
         </span>
         <span>
           <span className="flex items-center gap-2 text-fg"><KeyRound className="size-3.5 text-faint" strokeWidth={1.75} />Test any keys we find</span>
@@ -159,7 +159,7 @@ export default function NewScan({ onSubmit }) {
         <button
           type="submit"
           disabled={!ready || !!busy}
-          className="flex items-center gap-2.5 rounded-lg bg-accent px-5 py-3 text-[15px] font-semibold text-accent-ink shadow-[0_8px_24px_-10px_rgba(114,216,168,0.6)] transition-[filter,opacity] hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none"
+          className="flex items-center gap-2.5 rounded-lg bg-hot px-5 py-3 text-[15px] font-semibold text-ink transition-[background-color,opacity] hover:bg-white disabled:cursor-not-allowed disabled:opacity-35"
         >
           {busy === 'scan' ? <LoaderCircle className="size-[18px] animate-spin" /> : <ShieldCheck className="size-[18px]" strokeWidth={2} />}
           {busy === 'scan' ? 'Starting…' : 'Start scan'}
@@ -176,21 +176,16 @@ function Editor({ code, setCode, filename, setFilename }) {
   return (
     <div className="overflow-hidden rounded-xl border border-line bg-ink focus-within:border-line-strong">
       <div className="flex items-center gap-3 border-b border-line px-4 py-2.5">
-        <span className="flex gap-1.5" aria-hidden>
-          <span className="size-2.5 rounded-full bg-crit/70" />
-          <span className="size-2.5 rounded-full bg-med/70" />
-          <span className="size-2.5 rounded-full bg-accent/70" />
-        </span>
+        <Code className="size-4 shrink-0 text-faint" strokeWidth={1.75} aria-hidden />
         <label className="sr-only" htmlFor="filename">File name (optional)</label>
         <input
           id="filename"
           value={filename}
           onChange={(e) => setFilename(e.target.value)}
-          placeholder="your-code.ts"
+          placeholder="File name, e.g. src/App.tsx"
           spellCheck={false}
           className="min-w-0 flex-1 bg-transparent font-mono text-[13px] text-muted outline-none placeholder:text-faint"
         />
-        <span className="eyebrow hidden text-[10.5px] sm:block">Source</span>
       </div>
       <div className="flex">
         <div ref={gutter} className="w-12 shrink-0 overflow-hidden py-4 pr-3 text-right font-mono text-[13px] leading-[1.75] text-faint/70 select-none" aria-hidden>
