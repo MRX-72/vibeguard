@@ -12,3 +12,4 @@ backend/static/
 !sample-repo/.env
 backend/rules/registry.json
 .claude/scheduled_tasks.lock
+.impeccable/review/

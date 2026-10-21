@@ -1,52 +1,61 @@
-import { ArrowRight, CloudUpload, Code, FolderGit2, LoaderCircle, Sparkles, X } from 'lucide-react'
+import { CircleX, GitPullRequest, LoaderCircle, MessageSquare } from 'lucide-react'
 import { useScans } from '../history'
-import { GRADE_CHIP } from '../severity'
+import { GRADE_CHIP, VERDICT } from '../severity'
 
-const SOURCE = { demo: Sparkles, paste: Code, zip: CloudUpload, github: FolderGit2 }
 const when = new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })
+const STATE_ICON = { A: 'text-fix', B: 'text-fix', C: 'text-med', D: 'text-high', F: 'text-crit' }
+const SOURCE = { demo: 'demo app', paste: 'pasted code', zip: 'zip upload', github: 'GitHub repo' }
 
-export default function ScanList({ tick, limit = 8, rows: given }) {
+// Reviews listed the way a repository lists pull requests: state, name, when, verdict, comment count.
+export default function ScanList({ tick, limit = 8, rows: given, compact }) {
   const own = useScans(tick, limit)
   const rows = given !== undefined ? given : own
-  if (rows === null) return <div className="h-40 animate-pulse" aria-label="Loading scans" />
+  if (rows === null) return <div className="h-40 animate-pulse bg-surface/50" aria-label="Loading reviews" />
   if (!rows.length)
     return (
-      <p className="py-10 text-center text-[15px] leading-relaxed text-faint">
-        No scans yet. Run the demo to see what a report looks like.
-      </p>
+      <div className="px-6 py-12 text-center">
+        <GitPullRequest className="mx-auto size-6 text-faint" strokeWidth={1.7} />
+        <p className="mt-3 text-[15px] font-semibold">No reviews yet</p>
+        <p className="mt-1 text-[14px] text-muted">
+          Start one above, or <a href="#/demo" className="text-low hover:underline">review the demo app</a> to see a full report.
+        </p>
+      </div>
     )
   return (
     <ul className="divide-y divide-line">
-      {rows.map((s) => {
-        const Icon = SOURCE[s.source_type] ?? Code
-        return (
-          <li key={s.id}>
-            <a href={`#/scan/${s.id}`} className="group -mx-2 flex items-center gap-4 rounded-lg px-2 py-4 transition-colors hover:bg-raised/60">
-              <span className="grid size-10 shrink-0 place-items-center rounded-lg border border-line bg-ink text-muted">
-                <Icon className="size-[18px]" strokeWidth={1.75} />
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-[15px] font-medium">{s.source_label || 'Scan'}</span>
-                <span className="mt-0.5 block text-[13px] text-faint tabular-nums">{when.format(new Date(s.created_at))}</span>
-              </span>
-              <span className="flex flex-col items-end gap-1">
-                <Chip scan={s} />
+      {rows.map((s) => (
+        <li key={s.id}>
+          <a href={`#/scan/${s.id}`} className="group flex items-start gap-3 px-4 py-3.5 transition-colors hover:bg-surface">
+            <StateIcon scan={s} />
+            <span className="min-w-0 flex-1">
+              <span className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+                <span className="truncate text-[15px] font-semibold group-hover:text-low">{s.source_label || 'Pasted code'}</span>
                 {s.status === 'done' && (
-                  <span className="text-[13px] text-faint"><span className="tabular-nums">{s.findings}</span> finding{s.findings === 1 ? '' : 's'}</span>
+                  <span className={`rounded-full px-2 py-px text-[12px] font-semibold ${GRADE_CHIP[s.grade]}`}>
+                    Grade {s.grade}{compact ? '' : `, ${VERDICT[s.grade].label.toLowerCase()}`}
+                  </span>
                 )}
+                {s.status === 'failed' && <span className="rounded-full bg-crit/12 px-2 py-px text-[12px] font-semibold text-crit">Didn't finish</span>}
               </span>
-              <ArrowRight className="size-4 shrink-0 text-faint transition-transform group-hover:translate-x-0.5 group-hover:text-muted" strokeWidth={1.75} />
-            </a>
-          </li>
-        )
-      })}
+              <span className="mt-1 block text-[13px] text-faint">
+                {SOURCE[s.source_type] ?? 'code'}, reviewed {when.format(new Date(s.created_at))}
+                {s.status === 'done' && !compact ? `, risk ${s.risk_score} of 100` : ''}
+              </span>
+            </span>
+            {s.status === 'done' && (
+              <span className="flex shrink-0 items-center gap-1.5 pt-0.5 text-[13.5px] text-faint" title={`${s.findings} comments`}>
+                <MessageSquare className="size-4" strokeWidth={1.9} />{s.findings}
+              </span>
+            )}
+          </a>
+        </li>
+      ))}
     </ul>
   )
 }
 
-function Chip({ scan }) {
-  const base = 'inline-flex items-center gap-1.5 rounded-md px-2 py-0.5 text-[13px] font-medium tabular-nums'
-  if (scan.status === 'done') return <span className={`${base} ${GRADE_CHIP[scan.grade]}`} title={`Grade ${scan.grade}, risk ${scan.risk_score} of 100`}>{scan.grade}<span className="font-normal opacity-75">{scan.risk_score}</span></span>
-  if (scan.status === 'failed') return <span className={`${base} bg-crit/10 text-crit`}><X className="size-3.5" strokeWidth={2} />Failed</span>
-  return <span className={`${base} bg-raised text-muted`}><LoaderCircle className="size-3.5 animate-spin" strokeWidth={2} />Scanning</span>
+function StateIcon({ scan }) {
+  if (scan.status === 'done') return <GitPullRequest className={`mt-0.5 size-[18px] shrink-0 ${STATE_ICON[scan.grade]}`} strokeWidth={2} aria-label={VERDICT[scan.grade].label} />
+  if (scan.status === 'failed') return <CircleX className="mt-0.5 size-[18px] shrink-0 text-crit" strokeWidth={2} aria-label="Didn't finish" />
+  return <LoaderCircle className="mt-0.5 size-[18px] shrink-0 animate-spin text-med" strokeWidth={2} aria-label="In progress" />
 }

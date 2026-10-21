@@ -1,0 +1,123 @@
+{
+  "title": "Choose VibeGuard's visual world",
+  "question": "The roll assigned the pull-request review. Keep it, take my pick, adopt a challenger, or re-roll.",
+  "options": [
+    {
+      "id": "assigned",
+      "label": "The Pull-Request Review",
+      "kicker": "THE ROLL",
+      "lineage": "GitHub / GitLab code review: diffs, inline comments, Request changes",
+      "thesis": "Your app gets the security review its AI builder never gave it: comments pinned to the exact lines.",
+      "palette": ["#0d1117", "#e6edf3", "#da3633", "#d29922", "#2f81f7", "#3fb950"],
+      "materials": ["diff gutters and hunk headers", "review comment threads", "suggested-change blocks", "status checks"],
+      "viewport": "A pull request titled with the user's app: a diff of Comment.jsx with three review comments threaded under the dangerous lines, 'Request changes' as the verdict, and the primary action 'Review my code'.",
+      "risk": "Can read as a GitHub clone unless the review voice, type and verdict system are VibeGuard's own.",
+      "raised": [
+        { "from": "challenger-provenance", "raise": "Confidence is drawn, not labelled: Confirmed comments solid, Likely regular, Needs review in a dashed hairline thread." },
+        { "from": "challenger-soundsystem", "raise": "Severity is billed by type weight and size as well as colour, so the worst comment outranks the rest even in greyscale." },
+        { "from": "challenger-drum-machine", "raise": "Scan progress is one unbroken row of check runs with a moving light marking 'now'." },
+        { "from": "challenger-window-box", "raise": "Every comment's collapsed line is the whole summary; expanding it is only detail." }
+      ]
+    },
+    {
+      "id": "model-pick",
+      "label": "Red Pen",
+      "kicker": "MY PICK",
+      "lineage": "a teacher's marked-up essay",
+      "thesis": "Your code handed back marked in red: lines circled, notes in the margin, the grade at the top.",
+      "palette": ["#f7f6f2", "#1c1c1c", "#d62828", "#1d4ed8"],
+      "materials": ["ruled paper", "hand-drawn circles and arrows", "margin notes"],
+      "viewport": "A sheet of code with the risky lines circled in red ink, margin notes in plain English, and a big red F in the corner.",
+      "risk": "Familiar school metaphor; a light paper ground drifts toward the cream-and-red default."
+    },
+    {
+      "id": "challenger-soundsystem",
+      "label": "Soundsystem Poster",
+      "verdict": "declined",
+      "lineage": "Jamaican dance posters on fluorescent card",
+      "thesis": "Findings billed like sound systems, biggest risk in the biggest outlined caps.",
+      "palette": ["#f6ff3a", "#ff4fa3", "#111111"],
+      "materials": ["fluorescent card", "heavy screen ink"],
+      "viewport": "The worst finding stacked in outlined block caps across a warning-yellow sheet.",
+      "case": "Loud and memorable, but builders don't see themselves in it and it hides the code.",
+      "risk": "Shouts where the product needs to be trusted.",
+      "kept": "Rank carried by type weight, not colour alone."
+    },
+    {
+      "id": "challenger-provenance",
+      "label": "Provenance Ribbon",
+      "verdict": "declined",
+      "lineage": "museum provenance records",
+      "thesis": "Each risk traced as a ribbon from source to sink.",
+      "palette": ["#efe6d2", "#b3261e", "#8a8a8a"],
+      "materials": ["archival buff", "red silk ribbon"],
+      "viewport": "One ribbon running from request input to the dangerous line.",
+      "case": "Elegant for data flow, too academic for a builder before launch.",
+      "risk": "Archival calm where urgency is due.",
+      "kept": "Known, inferred and disputed drawn differently: our confidence levels."
+    },
+    {
+      "id": "challenger-drum-machine",
+      "label": "Step Sequencer",
+      "verdict": "declined",
+      "lineage": "early-80s rhythm machines",
+      "thesis": "The scan as a sixteen-step pattern lighting up.",
+      "palette": ["#2b2b2b", "#e53935", "#fb8c00", "#fdd835", "#f5f5f5"],
+      "materials": ["silkscreen panel", "LED keys"],
+      "viewport": "A step row of scanners with a chase light.",
+      "case": "A good progress metaphor, unrelated to reading a report.",
+      "risk": "Toy-like for a security verdict.",
+      "kept": "One unbroken step row with a light marking now."
+    },
+    {
+      "id": "challenger-window-box",
+      "label": "Toy Window Boxes",
+      "verdict": "declined",
+      "lineage": "toy-aisle window boxes",
+      "thesis": "Each finding a boxed set you open.",
+      "palette": ["#f4ecd8", "#5b8c51", "#d94f70", "#7fb2e5"],
+      "materials": ["card board", "cellophane windows"],
+      "viewport": "A shelf of boxed findings.",
+      "case": "Charming, wrong register for risk.",
+      "risk": "Trivialises real exposure.",
+      "kept": "The box front is the whole summary; opening it is only detail."
+    },
+    {
+      "id": "challenger-crt",
+      "label": "CRT Arcade",
+      "verdict": "declined",
+      "lineage": "pixel-art arcade screens",
+      "thesis": "Your app's risk as a high-score screen.",
+      "palette": ["#000000", "#ffd84a", "#ff3b3b", "#3bd1ff"],
+      "materials": ["phosphor pixels", "scanlines"],
+      "viewport": "Pixel caps listing findings like a score table.",
+      "case": "Gamifies security; low trust.",
+      "risk": "Novelty over clarity.",
+      "kept": "Colours reserved by law for one meaning."
+    },
+    {
+      "id": "challenger-brine",
+      "label": "Brine Calendar",
+      "verdict": "declined",
+      "lineage": "pickling jars ranked by season",
+      "thesis": "Findings maturing like jars on a shelf.",
+      "palette": ["#e9f1ec", "#ff7a6b", "#9b1c3a", "#7aa35b"],
+      "materials": ["jar glass", "kraft labels"],
+      "viewport": "Jars labelled by risk on a shelf.",
+      "case": "No connection to code or builders.",
+      "risk": "Whimsy unrelated to the job.",
+      "kept": "Every item wears the same label band."
+    }
+  ],
+  "reroll": { "registers": ["safer", "bolder"] },
+  "canon": true,
+  "canonCard": {
+    "label": "The category standard",
+    "thesis": "A security-tool landing done impeccably: dark, precise, product screenshots.",
+    "palette": ["#0b0d12", "#e8eaf0", "#6366f1"],
+    "materials": ["clean grid", "product screenshots"],
+    "viewport": "Headline, CTA and a screenshot of the report.",
+    "risk": "Indistinguishable from every other scanner by design."
+  },
+  "steer": true
+}

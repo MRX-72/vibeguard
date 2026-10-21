@@ -1,13 +1,13 @@
-import { ArrowRight, CloudUpload, Code, FolderGit2, KeyRound, LoaderCircle, Lock, ShieldCheck } from 'lucide-react'
+import { CloudUpload, Code, FolderGit2, KeyRound, LoaderCircle, Lock } from 'lucide-react'
 import { useRef, useState } from 'react'
 
 const TABS = [
   { id: 'paste', label: 'Paste code', icon: Code },
-  { id: 'zip', label: 'ZIP upload', icon: CloudUpload },
+  { id: 'zip', label: 'Upload zip', icon: CloudUpload },
   { id: 'github', label: 'GitHub repo', icon: FolderGit2 },
 ]
 const MAX_ZIP = 50 * 1024 * 1024
-const PLACEHOLDER = '// Paste a component, an API route, a .env file,\n// Firebase rules or a Supabase migration.\n// We look for exposed keys, open data and risky patterns.'
+const PLACEHOLDER = 'Paste a component, an API route, a .env file, Firebase rules or a Supabase migration.'
 
 export default function NewScan({ onSubmit }) {
   const [tab, setTab] = useState('paste')
@@ -15,26 +15,28 @@ export default function NewScan({ onSubmit }) {
   const [filename, setFilename] = useState('')
   const [file, setFile] = useState(null)
   const [url, setUrl] = useState('')
-  const [busy, setBusy] = useState(null) // 'scan' while a request is out
+  const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
   const [dragging, setDragging] = useState(false)
   const [verify, setVerify] = useState(false)
 
   const ready = { paste: code.trim(), zip: file, github: url.trim() }[tab]
 
-  async function send(sourceType, payload) {
+  async function submit(e) {
+    e.preventDefault()
+    if (!ready || busy) return
     const form = new FormData()
-    form.append('source_type', sourceType)
-    if (payload != null) form.append('payload', payload)
-    if (sourceType === 'paste' && filename.trim()) form.append('filename', filename.trim())
+    form.append('source_type', tab)
+    form.append('payload', { paste: code, zip: file, github: url.trim() }[tab])
+    if (tab === 'paste' && filename.trim()) form.append('filename', filename.trim())
     if (verify) form.append('verify_secrets', '1')
-    setBusy('scan')
+    setBusy(true)
     setError(null)
     try {
       await onSubmit(form)
-    } catch (e) {
-      setError(e.message)
-      setBusy(null)
+    } catch (err) {
+      setError(err.message)
+      setBusy(false)
     }
   }
 
@@ -46,14 +48,9 @@ export default function NewScan({ onSubmit }) {
     setFile(f)
   }
 
-  function submit(e) {
-    e.preventDefault()
-    if (ready && !busy) send(tab, { paste: code, zip: file, github: url.trim() }[tab])
-  }
-
   return (
-    <form id="new-scan" onSubmit={submit} className="flex scroll-mt-28 flex-col rounded-2xl border border-line bg-surface p-5 sm:p-7">
-      <div role="tablist" aria-label="How to provide code" className="flex gap-1 overflow-x-auto border-b border-line">
+    <form id="new-scan" onSubmit={submit} className="overflow-hidden rounded-lg border border-line bg-surface">
+      <div role="tablist" aria-label="How to provide code" className="flex gap-1 overflow-x-auto border-b border-line bg-raised/50 px-2 pt-2">
         {TABS.map(({ id, label, icon: Icon }) => (
           <button
             key={id}
@@ -63,16 +60,17 @@ export default function NewScan({ onSubmit }) {
             aria-selected={tab === id}
             aria-controls="scan-panel"
             onClick={() => { setTab(id); setError(null) }}
-            className={`relative flex shrink-0 items-center gap-2 px-2.5 pt-1 pb-3.5 text-[14px] transition-colors sm:px-3 sm:text-[15px] ${tab === id ? 'text-fg' : 'text-muted hover:text-fg'}`}
+            className={`-mb-px flex shrink-0 items-center gap-2 rounded-t-md border px-3.5 py-2 text-[14px] transition-colors ${
+              tab === id ? 'border-line border-b-surface bg-surface font-semibold text-fg' : 'border-transparent text-muted hover:text-fg'
+            }`}
           >
-            <Icon className="hidden size-[18px] sm:block" strokeWidth={1.75} />
+            <Icon className="size-4" strokeWidth={1.9} />
             {label}
-            {tab === id && <span className="absolute inset-x-1 -bottom-px h-0.5 rounded-full bg-hot" />}
           </button>
         ))}
       </div>
 
-      <div id="scan-panel" role="tabpanel" aria-labelledby={`tab-${tab}`} className="mt-5">
+      <div id="scan-panel" role="tabpanel" aria-labelledby={`tab-${tab}`} className="p-3 sm:p-4">
         {tab === 'paste' && <Editor code={code} setCode={setCode} filename={filename} setFilename={setFilename} />}
 
         {tab === 'zip' && (
@@ -80,33 +78,31 @@ export default function NewScan({ onSubmit }) {
             onDragOver={(e) => { e.preventDefault(); setDragging(true) }}
             onDragLeave={() => setDragging(false)}
             onDrop={(e) => { e.preventDefault(); setDragging(false); pickFile(e.dataTransfer.files[0]) }}
-            className={`flex min-h-[260px] cursor-pointer flex-col items-center justify-center gap-3 rounded-xl border border-dashed px-4 text-center transition-colors ${
-              dragging ? 'border-hot bg-hot/[0.04]' : 'border-line-strong bg-ink hover:border-faint'
+            className={`flex min-h-[280px] cursor-pointer flex-col items-center justify-center gap-3 rounded-md border border-dashed px-4 text-center transition-colors ${
+              dragging ? 'border-fix bg-fix/[0.05]' : 'border-line-strong bg-inset hover:border-faint'
             }`}
           >
             <input type="file" accept=".zip,application/zip" className="sr-only" onChange={(e) => pickFile(e.target.files[0])} />
-            <span className="grid size-11 place-items-center rounded-xl border border-line bg-surface text-muted">
-              <CloudUpload className="size-5" strokeWidth={1.75} />
-            </span>
+            <CloudUpload className="size-6 text-muted" strokeWidth={1.7} />
             {file ? (
               <>
-                <span className="font-mono text-sm">{file.name}</span>
-                <span className="text-sm text-faint">{(file.size / 1024 / 1024).toFixed(1)} MB · click to choose another</span>
+                <span className="font-mono text-[14px]">{file.name}</span>
+                <span className="text-[14px] text-faint">{(file.size / 1024 / 1024).toFixed(1)} MB. Click to choose another.</span>
               </>
             ) : (
               <>
-                <span className="text-[15px]">Drop a .zip here, or click to choose one</span>
-                <span className="text-sm text-faint">Up to 50 MB. Leave out node_modules and build output.</span>
+                <span className="text-[15px] font-medium">Drop a .zip here, or click to choose one</span>
+                <span className="text-[14px] text-faint">Up to 50 MB. Leave out node_modules and build output.</span>
               </>
             )}
           </label>
         )}
 
         {tab === 'github' && (
-          <div className="flex min-h-[260px] flex-col justify-center gap-3 rounded-xl border border-line bg-ink px-5 py-8">
-            <label className="text-sm text-muted" htmlFor="repo">Public repository URL</label>
-            <div className="flex items-center gap-3 rounded-lg border border-line-strong bg-surface px-3.5 focus-within:border-faint">
-              <FolderGit2 className="size-[18px] shrink-0 text-faint" strokeWidth={1.75} />
+          <div className="flex min-h-[280px] flex-col justify-center gap-3 rounded-md border border-line bg-inset px-5 py-8">
+            <label className="text-[14px] font-medium" htmlFor="repo">Public repository URL</label>
+            <div className="flex items-center gap-3 rounded-md border border-line-strong bg-surface px-3 focus-within:border-low">
+              <FolderGit2 className="size-4 shrink-0 text-faint" strokeWidth={1.9} />
               <input
                 id="repo"
                 type="url"
@@ -114,41 +110,39 @@ export default function NewScan({ onSubmit }) {
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
                 placeholder="https://github.com/owner/repo"
-                className="w-full bg-transparent py-3 font-mono text-[14px] outline-none placeholder:text-faint"
+                className="w-full bg-transparent py-2.5 font-mono text-[14px] outline-none placeholder:text-faint"
               />
             </div>
-            <p className="text-sm text-faint">We clone the default branch, scan it, and delete it. Private repositories aren't supported.</p>
+            <p className="text-[14px] text-faint">We clone the default branch, review it, and delete it. Private repositories aren't supported.</p>
           </div>
         )}
       </div>
 
-      <label className="mt-5 flex cursor-pointer items-start gap-3 text-sm">
-        <input type="checkbox" checked={verify} onChange={(e) => setVerify(e.target.checked)} className="peer sr-only" />
-        <span className="mt-0.5 grid size-[18px] shrink-0 place-items-center rounded-[5px] border border-line-strong bg-ink transition-colors peer-checked:border-hot peer-checked:bg-hot peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-hot">
-          {verify && <svg viewBox="0 0 12 12" className="size-3 text-ink"><path d="m2.5 6.2 2.2 2.2 4.8-4.9" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>}
-        </span>
-        <span>
-          <span className="flex items-center gap-2 text-fg"><KeyRound className="size-3.5 text-faint" strokeWidth={1.75} />Test any keys we find</span>
-          <span className="mt-0.5 block text-faint">Sends each key to its own provider once, read-only, to see if it still works. Only for code you own.</span>
-        </span>
-      </label>
+      <div className="flex flex-col gap-4 border-t border-line px-3 py-3.5 sm:px-4">
+        <label className="flex cursor-pointer items-start gap-3 text-[14px]">
+          <input type="checkbox" checked={verify} onChange={(e) => setVerify(e.target.checked)} className="mt-0.5 size-4 shrink-0" />
+          <span>
+            <span className="flex items-center gap-1.5 font-medium"><KeyRound className="size-3.5 text-faint" strokeWidth={2} />Test any keys we find</span>
+            <span className="mt-0.5 block text-faint">Sends each key to its own provider once, read-only, to see if it still works. Only for code you own.</span>
+          </span>
+        </label>
 
-      {error && <p role="alert" className="mt-4 rounded-lg border border-crit/25 bg-crit/[0.07] px-3.5 py-2.5 text-sm text-crit">{error}</p>}
+        {error && <p role="alert" className="rounded-md border border-crit/30 bg-crit/[0.08] px-3 py-2 text-[14px] text-crit">{error}</p>}
 
-      <div className="mt-6 flex flex-wrap items-center justify-between gap-4 border-t border-line pt-5">
-        <p className="flex max-w-[44ch] items-start gap-2.5 text-[13px] leading-relaxed text-faint">
-          <Lock className="mt-0.5 size-3.5 shrink-0" strokeWidth={1.75} />
-          Your code is used for this scan only. An AI model on Groq double-checks uncertain findings, with secrets masked.
-        </p>
-        <button
-          type="submit"
-          disabled={!ready || !!busy}
-          className="flex items-center gap-2.5 rounded-lg bg-hot px-5 py-3 text-[15px] font-semibold text-ink transition-[background-color,opacity] hover:bg-white disabled:cursor-not-allowed disabled:opacity-35"
-        >
-          {busy === 'scan' ? <LoaderCircle className="size-[18px] animate-spin" /> : <ShieldCheck className="size-[18px]" strokeWidth={2} />}
-          {busy === 'scan' ? 'Starting…' : 'Start scan'}
-          {busy !== 'scan' && <ArrowRight className="size-4" strokeWidth={2} />}
-        </button>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <p className="flex max-w-[52ch] items-start gap-2 text-[13px] leading-relaxed text-faint">
+            <Lock className="mt-0.5 size-3.5 shrink-0" strokeWidth={2} />
+            Used for this review only, then deleted. An AI model on Groq double-checks uncertain comments, with secrets masked.
+          </p>
+          <button
+            type="submit"
+            disabled={!ready || busy}
+            className="flex items-center gap-2 rounded-md bg-go px-4 py-2 text-[14.5px] font-semibold text-white transition-[background-color,opacity] hover:bg-[#1a7a4b] disabled:cursor-not-allowed disabled:opacity-45"
+          >
+            {busy && <LoaderCircle className="size-4 animate-spin" />}
+            {busy ? 'Starting review…' : 'Start review'}
+          </button>
+        </div>
       </div>
     </form>
   )
@@ -156,11 +150,11 @@ export default function NewScan({ onSubmit }) {
 
 function Editor({ code, setCode, filename, setFilename }) {
   const gutter = useRef(null)
-  const lines = Math.max(code.split('\n').length, 10)
+  const lines = Math.max(code.split('\n').length, 12)
   return (
-    <div className="overflow-hidden rounded-xl border border-line bg-ink focus-within:border-line-strong">
-      <div className="flex items-center gap-3 border-b border-line px-4 py-2.5">
-        <Code className="size-4 shrink-0 text-faint" strokeWidth={1.75} aria-hidden />
+    <div className="overflow-hidden rounded-md border border-line bg-inset focus-within:border-line-strong">
+      <div className="flex items-center gap-2.5 border-b border-line bg-surface px-3 py-2">
+        <Code className="size-4 shrink-0 text-faint" strokeWidth={1.9} aria-hidden />
         <label className="sr-only" htmlFor="filename">File name (optional)</label>
         <input
           id="filename"
@@ -168,12 +162,12 @@ function Editor({ code, setCode, filename, setFilename }) {
           onChange={(e) => setFilename(e.target.value)}
           placeholder="File name, e.g. src/App.tsx"
           spellCheck={false}
-          className="min-w-0 flex-1 bg-transparent font-mono text-[13px] text-muted outline-none placeholder:text-faint"
+          className="min-w-0 flex-1 bg-transparent font-mono text-[13px] outline-none placeholder:text-faint"
         />
       </div>
       <div className="flex">
-        <div ref={gutter} className="w-12 shrink-0 overflow-hidden py-4 pr-3 text-right font-mono text-[13px] leading-[1.75] text-faint/70 select-none" aria-hidden>
-          {Array.from({ length: lines }, (_, i) => <div key={i}>{String(i + 1).padStart(2, '0')}</div>)}
+        <div ref={gutter} className="w-11 shrink-0 overflow-hidden py-3 pr-3 text-right font-mono text-[13px] leading-[1.75] text-faint select-none" aria-hidden>
+          {Array.from({ length: lines }, (_, i) => <div key={i}>{i + 1}</div>)}
         </div>
         <label className="sr-only" htmlFor="code">Code</label>
         <textarea
@@ -183,9 +177,9 @@ function Editor({ code, setCode, filename, setFilename }) {
           onScroll={(e) => { if (gutter.current) gutter.current.scrollTop = e.target.scrollTop }}
           spellCheck={false}
           wrap="off"
-          rows={10}
+          rows={12}
           placeholder={PLACEHOLDER}
-          className="block h-[260px] w-full resize-y bg-transparent py-4 pr-4 font-mono text-[13px] leading-[1.75] text-fg outline-none placeholder:text-faint/80"
+          className="block h-[280px] w-full resize-y bg-transparent py-3 pr-3 font-mono text-[13px] leading-[1.75] outline-none placeholder:text-faint"
         />
       </div>
     </div>

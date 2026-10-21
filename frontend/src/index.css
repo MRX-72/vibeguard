@@ -1,29 +1,26 @@
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "Bricolage Grotesque", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --font-sans: "Schibsted Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Red Hat Mono", ui-monospace, "SF Mono", Menlo, monospace;
 
-  /* violet-black base; colour means heat (risk) and nothing else */
-  --color-ink: #110e18;
-  --color-side: #0d0b13;
-  --color-surface: #18141f;
-  --color-raised: #201a2a;
-  --color-line: #2a2336;
-  --color-line-strong: #3a3148;
-  --color-fg: #efeaf5;
-  --color-muted: #a59db3;
-  --color-faint: #746b84;
-  --color-hot: #f6f1ff; /* "white-hot": primary actions */
+  /* a pull-request review at night: graphite canvas, diff colours carry meaning */
+  --color-ink: #111317; /* canvas */
+  --color-inset: #0c0e11; /* code */
+  --color-surface: #171a1f; /* panels */
+  --color-raised: #1d2128;
+  --color-line: #282d35;
+  --color-line-strong: #363c46;
+  --color-fg: #e6e8eb;
+  --color-muted: #a3aab5;
+  --color-faint: #7f8794;
 
-  /* severity is a thermal ramp, cool to hot */
-  --color-low: #6f8cff;
-  --color-med: #f4b740;
-  --color-high: #ff7a3c;
-  --color-crit: #ff3e6c;
-  --color-fix: #56d2bd; /* safe, fixed, already right */
-  --color-accent: #56d2bd;
-  --color-accent-ink: #0a1a17;
+  --color-go: #1f8a55; /* primary action: submit / start a review */
+  --color-fix: #43c286; /* added lines, fixes, passed checks */
+  --color-crit: #f2555a; /* removed lines, Critical, changes requested */
+  --color-high: #f0883e;
+  --color-med: #d9a62b;
+  --color-low: #6ea8fe;
 }
 
 @layer base {
@@ -33,55 +30,52 @@
     color: var(--color-fg);
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
-    font-optical-sizing: auto;
+    scrollbar-color: var(--color-line-strong) transparent;
+    accent-color: var(--color-go);
+    caret-color: var(--color-fix);
   }
   body {
     font-family: var(--font-sans);
     min-height: 100dvh;
   }
   :focus-visible {
-    outline: 2px solid var(--color-hot);
+    outline: 2px solid var(--color-low);
     outline-offset: 2px;
     border-radius: 6px;
   }
   ::selection {
-    background: color-mix(in oklab, var(--color-crit) 35%, transparent);
+    background: color-mix(in oklab, var(--color-low) 38%, transparent);
   }
+  a { text-underline-offset: 3px; }
 }
 
-/* the thermal ramp, used where heat is the information (logo mark, heat scale) */
-.heat-ramp {
-  background: linear-gradient(90deg, var(--color-low), #b06cff 30%, var(--color-crit) 58%, var(--color-high) 78%, var(--color-med));
+/* the one authored moment: review comments post into the diff, one after another */
+@keyframes post {
+  from { opacity: 0; transform: translateY(-4px); clip-path: inset(0 0 100% 0); }
+  to { opacity: 1; transform: none; clip-path: inset(0 0 0 0); }
 }
-
 @keyframes rise {
-  from { opacity: 0; transform: translateY(6px); }
+  from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: none; }
 }
-
-/* the hero's one moment: a scan line passes once and the risky lines heat up as it reaches them */
-@keyframes sweep {
-  from { top: 0; opacity: 1; }
-  90% { opacity: 1; }
-  to { top: 100%; opacity: 0; }
-}
-@keyframes heat-up {
-  from { opacity: 0; }
-  to { opacity: 1; }
+/* the check row's light marking "now" */
+@keyframes scan-light {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(400%); }
 }
 
 /* Save as PDF: a light page, every card expanded (Report opens them), no buttons */
 @media print {
   :root {
     --color-ink: #ffffff;
-    --color-side: #ffffff;
+    --color-inset: #f6f7f9;
     --color-surface: #ffffff;
-    --color-raised: #f3f2f6;
-    --color-line: #dcd9e2;
-    --color-line-strong: #c9c5d2;
-    --color-fg: #15121b;
-    --color-muted: #423d4c;
-    --color-faint: #6c6576;
+    --color-raised: #f2f3f5;
+    --color-line: #d9dce1;
+    --color-line-strong: #c4c8cf;
+    --color-fg: #14161a;
+    --color-muted: #3c4149;
+    --color-faint: #5c626c;
   }
   html { color-scheme: light; }
   figure, summary { break-inside: avoid; }

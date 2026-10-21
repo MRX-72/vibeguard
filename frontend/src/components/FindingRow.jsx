@@ -1,84 +1,97 @@
+import { Check, CircleCheck, Copy as CopyIcon } from 'lucide-react'
 import { useState } from 'react'
-import { SEV } from '../severity'
+import { CONFIDENCE_LINE, SEV } from '../severity'
+import { Mark } from './Logo'
 
-const AI = { real: 'AI agrees', false_positive: 'AI: not a real risk', unsure: 'AI: unsure' }
+const AI = { real: 'AI review agrees', false_positive: 'AI review: not a real risk', unsure: 'AI review: unsure' }
+const CONFIDENCE_TEXT = { 'Confirmed reachable': 'Confirmed reachable', Likely: 'Likely', 'Needs review': 'Needs review' }
 
-const CONFIDENCE = {
-  'Confirmed reachable': 'text-fg bg-fg/10',
-  Likely: 'text-muted bg-raised',
-  'Needs review': 'text-faint bg-raised',
-}
-
-export default function FindingRow({ finding: f, index }) {
+// One finding as a review thread: the code it is about, then VibeGuard's comment under it. The collapsed line is the
+// whole summary (severity, title, line, how sure); opening it is detail. Line style draws confidence.
+export default function FindingRow({ finding: f, resolved = false, onResolve }) {
   const sev = SEV[f.severity]
-  const where = f.file ? `${f.file}${f.line ? `:${f.line}` : ''}` : ''
+  const noise = f.is_false_positive
+  const line = f.line ? `line ${f.line}` : ''
   return (
-    <li id={`f-${f.id}`} className="scroll-mt-32 animate-[rise_400ms_ease-out_both]" style={{ animationDelay: `${Math.min(index, 12) * 35}ms` }}>
-      <details className="group relative overflow-hidden rounded-xl border border-line bg-surface transition-colors open:border-line-strong">
-        <span className={`absolute inset-y-0 left-0 w-[3px] ${f.is_false_positive ? 'bg-line' : sev.bg}`} aria-hidden />
-        <summary className="flex cursor-pointer list-none flex-col gap-1.5 py-4 pr-5 pl-6 hover:bg-raised/60 sm:flex-row sm:items-center sm:gap-4 [&::-webkit-details-marker]:hidden">
-          <span className={`flex w-[5.5rem] shrink-0 items-center gap-2 text-[14px] font-medium ${f.is_false_positive ? 'text-faint' : sev.text}`}>
-            <span className={`size-2 rounded-full ${f.is_false_positive ? 'bg-faint' : sev.bg}`} aria-hidden />{f.severity}
+    <li id={`f-${f.id}`} className="scroll-mt-32">
+      <details
+        className={`group rounded-lg border bg-surface ${CONFIDENCE_LINE[f.confidence]} ${
+          noise || resolved ? 'border-line opacity-75' : sev.border
+        } open:opacity-100`}
+      >
+        <summary className="flex cursor-pointer list-none items-start gap-3 px-4 py-3 hover:bg-raised/50 [&::-webkit-details-marker]:hidden">
+          <Mark size={22} round />
+          <span className="min-w-0 flex-1">
+            <span className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+              <span className={`text-[14px] ${noise ? 'text-faint' : `${sev.text} ${sev.weight}`}`}>{f.severity}</span>
+              <span className={`text-[15px] leading-snug ${resolved ? 'text-muted line-through decoration-faint' : 'font-semibold'}`}>{f.title}</span>
+              {f.money_risk && !noise && (
+                <span className="rounded-full border border-line-strong px-1.5 text-[12px] font-medium text-muted" title="Could run up a bill or drain an API quota">$ risk</span>
+              )}
+              {resolved && <span className="rounded-full bg-fix/15 px-2 text-[12px] font-semibold text-fix">Resolved</span>}
+            </span>
+            <span className="mt-0.5 block text-[13px] text-faint">
+              {f.kind === 'dependency' ? f.package : line}
+              {line || f.kind === 'dependency' ? ', ' : ''}
+              {CONFIDENCE_TEXT[f.confidence].toLowerCase()}
+              {f.ai_verdict ? `, ${AI[f.ai_verdict].toLowerCase()}` : ''}
+            </span>
           </span>
-          <span className="flex-1 text-[15.5px] font-medium">
-            {f.title}
-            {f.money_risk && !f.is_false_positive && (
-              <span className="ml-2 inline-flex translate-y-[-1px] rounded-md border border-line-strong px-1.5 py-0.5 align-middle text-xs font-medium text-muted" title="Could run up a bill or drain an API quota">
-                $ risk
-              </span>
-            )}
-          </span>
-          {where && <span className="truncate font-mono text-[12.5px] text-faint">{where}</span>}
         </summary>
 
-        <div className="flex flex-col gap-5 border-t border-line px-6 py-6">
-          {f.impact && <p className="text-[17px] leading-relaxed text-pretty">{f.impact}</p>}
+        <div className="border-t border-line">
+          {f.code_snippet && <Code code={f.code_snippet} start={f.snippet_start} from={f.line} to={f.end_line || f.line} />}
 
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-sm">
-            <span className={`rounded px-2 py-0.5 text-xs font-medium ${CONFIDENCE[f.confidence]}`}>
-              {f.kind === 'secret' && f.confidence === 'Confirmed reachable' ? 'Confirmed live' : f.confidence}
-            </span>
-            {f.ai_verdict && <span className="rounded bg-raised px-2 py-0.5 text-xs font-medium text-muted">{AI[f.ai_verdict]}</span>}
-            {f.detected_by?.length > 0 && <span className="text-faint">Found by {f.detected_by.join(', ')}</span>}
-          </div>
-
-          {f.ai_note && (
-            <p className="text-sm leading-relaxed text-muted"><span className="text-faint">AI review: </span>{f.ai_note}</p>
-          )}
-
-          {f.triage_note && <p className="text-sm leading-relaxed text-muted">{f.triage_note}</p>}
-          {f.severity_reason && !f.triage_note?.includes(f.severity_reason) && (
-            <p className="text-sm leading-relaxed text-muted"><span className="text-faint">Why {f.severity.toLowerCase()}: </span>{f.severity_reason}</p>
-          )}
-          {f.explanation && <p className="leading-relaxed text-muted text-pretty">{f.explanation}</p>}
-          {f.code_snippet && (
-            <Code label={where || 'Evidence'} code={f.code_snippet} start={f.snippet_start} from={f.line} to={f.end_line || f.line} />
-          )}
-          {f.evidence?.length > 0 && (
-            <div>
-              <p className="mb-2 text-sm text-muted">{f.kind === 'dependency' ? 'Advisories' : 'Evidence'}</p>
-              <ul className="flex flex-col gap-1.5 text-sm leading-relaxed text-muted">
-                {f.evidence.map((e, i) => <li key={i} className="break-words">{e}</li>)}
-              </ul>
+          <div className="flex flex-col gap-4 px-4 py-4 sm:pl-[3.25rem]">
+            {f.impact && <p className="text-[16.5px] leading-relaxed font-medium text-pretty">{f.impact}</p>}
+            {f.severity_reason && !f.triage_note?.includes(f.severity_reason) && (
+              <p className="text-[14.5px] leading-relaxed text-muted"><span className="font-semibold text-fg">Why {f.severity.toLowerCase()}:</span> {f.severity_reason}</p>
+            )}
+            {f.triage_note && <p className="text-[14.5px] leading-relaxed text-muted">{f.triage_note}</p>}
+            {f.ai_note && (
+              <p className="text-[14.5px] leading-relaxed text-muted"><span className="font-semibold text-fg">{AI[f.ai_verdict] ?? 'AI review'}:</span> {f.ai_note}</p>
+            )}
+            {f.explanation && <p className="text-[15px] leading-relaxed text-muted text-pretty">{f.explanation}</p>}
+            {f.evidence?.length > 0 && (
+              <div>
+                <p className="mb-1.5 text-[13.5px] font-semibold">{f.kind === 'dependency' ? 'Advisories' : 'Evidence'}</p>
+                <ul className="flex list-disc flex-col gap-1 pl-5 text-[14px] leading-relaxed text-muted marker:text-faint">
+                  {f.evidence.map((e, i) => <li key={i} className="break-words">{e}</li>)}
+                </ul>
+              </div>
+            )}
+            {f.fix_diff && <Suggestion diff={f.fix_diff} />}
+            {f.reprompt && (
+              <div className="overflow-hidden rounded-md border border-line">
+                <p className="flex items-center justify-between gap-3 border-b border-line bg-raised/60 px-3 py-1.5 text-[12.5px] font-medium text-muted">
+                  Prompt for your AI builder
+                  <Copy text={f.reprompt} />
+                </p>
+                <p className="bg-inset px-3 py-2.5 text-[14px] leading-relaxed text-muted">{f.reprompt}</p>
+              </div>
+            )}
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 pt-1">
+              {onResolve && !noise && (
+                <button
+                  type="button"
+                  onClick={onResolve}
+                  className={`flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-[13.5px] font-medium transition-colors print:hidden ${
+                    resolved ? 'border-line-strong text-muted hover:text-fg' : 'border-fix/40 text-fix hover:bg-fix/10'
+                  }`}
+                >
+                  <CircleCheck className="size-4" strokeWidth={2} />{resolved ? 'Reopen conversation' : 'Resolve conversation'}
+                </button>
+              )}
+              {f.detected_by?.length > 0 && <span className="text-[13px] text-faint">Found by {f.detected_by.join(', ')}</span>}
+              {f.refs?.length > 0 && (
+                <ul className="flex flex-wrap gap-x-3 gap-y-1 text-[13px]">
+                  {f.refs.map((r) => (
+                    <li key={r}><a href={r} target="_blank" rel="noreferrer" className="text-low hover:underline">{refLabel(r)}</a></li>
+                  ))}
+                </ul>
+              )}
             </div>
-          )}
-          {f.fix_diff && <Code label="Suggested fix" code={f.fix_diff} diff copy={fixText(f.fix_diff)} />}
-          {f.reprompt && (
-            <figure>
-              <figcaption className="mb-2 flex items-center justify-between gap-3 text-sm text-muted">
-                Ask your AI builder to fix it
-                <Copy text={f.reprompt} />
-              </figcaption>
-              <blockquote className="rounded-md border border-line bg-ink px-3 py-2.5 text-[14px] leading-relaxed text-muted">{f.reprompt}</blockquote>
-            </figure>
-          )}
-          {f.refs?.length > 0 && (
-            <ul className="flex flex-wrap gap-x-4 gap-y-1 text-sm">
-              {f.refs.map((r) => (
-                <li key={r}><a href={r} target="_blank" rel="noreferrer" className="text-faint underline decoration-line underline-offset-4 hover:text-fg">{refLabel(r)}</a></li>
-              ))}
-            </ul>
-          )}
+          </div>
         </div>
       </details>
     </li>
@@ -106,36 +119,52 @@ function Copy({ text }) {
     <button
       type="button"
       onClick={() => navigator.clipboard?.writeText(text).then(() => { setDone(true); setTimeout(() => setDone(false), 1500) })}
-      className="shrink-0 rounded px-2 py-0.5 font-sans text-xs text-faint hover:bg-raised hover:text-fg print:hidden"
+      className="flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 font-sans text-[12.5px] text-muted hover:bg-raised hover:text-fg print:hidden"
     >
+      {done ? <Check className="size-3.5" strokeWidth={2.4} /> : <CopyIcon className="size-3.5" strokeWidth={2} />}
       {done ? 'Copied' : 'Copy'}
     </button>
   )
 }
 
-function Code({ label, code, diff, start, from, to, copy }) {
-  const numbered = start > 0
+function Suggestion({ diff }) {
   return (
-    <figure>
-      <figcaption className={`mb-2 flex items-center justify-between gap-3 break-all ${diff ? 'text-sm text-muted' : 'font-mono text-[12.5px] text-faint'}`}>
-        {label}
-        {copy && <Copy text={copy} />}
-      </figcaption>
-      <pre className="overflow-x-auto rounded-md border border-line bg-ink py-3 font-mono text-[12.5px] leading-relaxed">
-        {code.split('\n').map((line, i) => {
-          const n = start + i
-          const hit = numbered && n >= from && n <= to
-          const tone = diff && line.startsWith('+') ? 'bg-fix/10 text-fix' : diff && line.startsWith('-') ? 'bg-crit/10 text-crit' : hit ? 'bg-fg/[0.06]' : numbered ? 'text-muted' : ''
+    <div className="overflow-hidden rounded-md border border-line">
+      <p className="flex items-center justify-between gap-3 border-b border-line bg-raised/60 px-3 py-1.5 text-[12.5px] font-medium text-muted">
+        Suggested change
+        <Copy text={fixText(diff)} />
+      </p>
+      <pre className="overflow-x-auto bg-inset py-2 font-mono text-[12.5px] leading-[1.75]">
+        {diff.split('\n').map((l, i) => {
+          const tone = l.startsWith('+') ? 'bg-fix/[0.1] text-fg' : l.startsWith('-') ? 'bg-crit/[0.1] text-fg' : 'text-muted'
+          const sign = l.startsWith('+') ? 'text-fix' : l.startsWith('-') ? 'text-crit' : 'text-faint'
           return (
             <div key={i} className={`flex min-w-max ${tone}`}>
-              {numbered && (
-                <span className={`w-12 shrink-0 pr-4 text-right select-none ${hit ? 'text-fg' : 'text-faint'}`} aria-hidden>{n}</span>
-              )}
-              <span className={numbered ? 'pr-4' : 'px-3'}>{line || ' '}</span>
+              <span className={`w-6 shrink-0 text-center select-none ${sign}`}>{/^[+-]/.test(l) ? l[0] : ' '}</span>
+              <span className="pr-4">{(/^[+-] ?/.test(l) ? l.replace(/^[+-] ?/, '') : l) || ' '}</span>
             </div>
           )
         })}
       </pre>
-    </figure>
+    </div>
+  )
+}
+
+// The code the comment is about, numbered, with the flagged lines marked like a selected range in a review.
+function Code({ code, start, from, to }) {
+  const numbered = start > 0
+  return (
+    <pre className="overflow-x-auto border-b border-line bg-inset py-2 font-mono text-[12.5px] leading-[1.75]">
+      {code.split('\n').map((l, i) => {
+        const n = start + i
+        const hit = numbered && n >= from && n <= to
+        return (
+          <div key={i} className={`flex min-w-max ${hit ? 'bg-med/[0.09] text-fg' : 'text-muted'}`}>
+            {numbered && <span className={`w-12 shrink-0 pr-4 text-right select-none ${hit ? 'text-med' : 'text-faint'}`} aria-hidden>{n}</span>}
+            <span className={numbered ? 'pr-4' : 'px-4'}>{l || ' '}</span>
+          </div>
+        )
+      })}
+    </pre>
   )
 }
