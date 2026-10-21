@@ -777,8 +777,9 @@ def test_scans_run_in_a_child_with_a_time_limit():
     import os
     import db
     import pipeline
-    old_db, old_env = db.DB_PATH, os.environ.get("VIBEGUARD_DB")
+    old_db, old_env, old_ai = db.DB_PATH, os.environ.get("VIBEGUARD_DB"), os.environ.get("TRIAGE_BACKEND")
     db.DB_PATH = os.environ["VIBEGUARD_DB"] = str(Path(tempfile.mkdtemp()) / "t.db")  # the child reads the env var
+    os.environ["TRIAGE_BACKEND"] = "off"  # no network in tests
     leftovers = lambda: set(Path(tempfile.gettempdir()).glob("vibeguard-*"))  # noqa: E731
     before = leftovers()
     try:
@@ -799,10 +800,76 @@ def test_scans_run_in_a_child_with_a_time_limit():
         pipeline._slot.release()
     finally:
         db.DB_PATH = old_db
+        os.environ.pop("TRIAGE_BACKEND") if old_ai is None else os.environ.__setitem__("TRIAGE_BACKEND", old_ai)
         if old_env is None:
             os.environ.pop("VIBEGUARD_DB")
         else:
             os.environ["VIBEGUARD_DB"] = old_env
+
+
+def test_ai_review_guardrails():
+    """The AI reviewer (offline: a fake model) can only change what its guardrails allow, sees no secrets, and a broken
+    answer leaves the report as the scanners wrote it."""
+    import os
+    import triage
+    root = Path(tempfile.mkdtemp())
+    (root / "api").mkdir()
+    key = "sk-proj-" + "Zx8Qw2Er4Ty6" * 4
+    (root / "api/app.js").write_text("".join(f"// line {n}\n" for n in range(1, 10)) +
+                                     f'const OPENAI = "{key}"\nconst token = "aB3dE5fG7hJ9kL1mN3pQ5rS7tU9"\n'
+                                     'app.get("/q", (req, res) => db.query("SELECT * FROM t WHERE id = " + req.query.id))\n')
+    mk = lambda **kw: Finding(**{"source": "semgrep", "severity": "High", "title": "t", "file": "api/app.js", "line": 12, **kw})  # noqa: E731
+    noise = mk(confidence="Needs review", raw_rule_id="a")
+    sqli = mk(raw_rule_id="b", explanation="rule-speak")
+    vague = mk(confidence="Needs review", raw_rule_id="c", fix_diff="kept")
+    proven = mk(confidence="Confirmed reachable", raw_rule_id="d")
+    dep = mk(kind="dependency", raw_rule_id="e", package="x@1")
+    invented = mk(source="bandit", raw_rule_id="f")
+    sent = []
+
+    class Fake:
+        model = "fake"
+
+        def __init__(self, answer):
+            self.answer = answer
+
+        def complete(self, system, user, max_tokens):
+            sent.append(user)
+            ids = [i["id"] for i in json.loads(user)["findings"]]
+            return self.answer(ids) if callable(self.answer) else self.answer
+
+    line = 'app.get("/q", (req, res) => db.query("SELECT * FROM t WHERE id = " + req.query.id))'
+    answers = lambda ids: json.dumps({"results": [  # noqa: E731
+        {"id": ids[1], "verdict": "false_positive", "line": 12, "severity": "Low", "reason": "Only a constant reaches it."},
+        {"id": ids[0], "verdict": "real", "line": 12, "severity": "Low", "reason": "The id comes straight from the URL.",
+         "explanation": "The query text includes whatever the visitor puts in ?id=, so they can add their own SQL to it.",
+         "fix": f'- {line}\n+ app.get("/q", (req, res) => db.query("SELECT * FROM t WHERE id = $1", [req.query.id]))'},
+        {"id": ids[2], "verdict": "real", "line": 99, "severity": "Critical", "reason": "Probably exploitable."},
+        {"id": ids[3], "verdict": "real", "line": 12, "severity": "High", "reason": "Real.", "fix": "- db.run(evil)\n+ db.run(good)"},
+    ]})
+    findings = [sqli, noise, vague, invented, proven, dep]
+    assert triage.triage(findings, root, {key}, Fake(answers)) == ("done", "4 findings reviewed")
+    assert noise.is_false_positive and noise.ai_verdict == "false_positive" and noise.ai_note == "Only a constant reaches it."
+    assert sqli.severity == "Medium" and "Rated medium" in sqli.ai_note  # asked for Low: one level at most
+    assert sqli.explanation.startswith("The query text") and sqli.fix_diff.startswith("- app.get")  # its removed line exists
+    assert vague.ai_verdict == "unsure" and vague.confidence == "Needs review" and vague.severity == "High"  # cited a line it wasn't shown
+    assert invented.ai_verdict == "real" and invented.fix_diff == ""  # removes a line that isn't in the code
+    assert not proven.ai_verdict and not dep.ai_verdict and len(json.loads(sent[0])["findings"]) == 4  # never sent
+    assert key[:12] not in "".join(sent) and "aB3dE5fG7hJ9" not in "".join(sent)  # known secret and key-shaped strings masked
+    # a model that keeps answering garbage changes nothing, and says so
+    fresh = mk(confidence="Needs review", raw_rule_id="g")
+    assert triage.triage([fresh], root, set(), Fake("not json")) == ("failed", "the AI reviewer didn't answer")
+    assert not fresh.ai_verdict and fresh.severity == "High" and not fresh.is_false_positive
+    old = {k: os.environ.get(k) for k in ("TRIAGE_BACKEND", "GROQ_API_KEY", "LLM_API_KEY")}
+    try:
+        os.environ["TRIAGE_BACKEND"] = "off"
+        assert triage.triage([fresh], root, set()) == ("skipped", "turned off")
+        os.environ["TRIAGE_BACKEND"] = "groq"
+        os.environ.pop("GROQ_API_KEY", None), os.environ.pop("LLM_API_KEY", None)
+        assert triage.triage([fresh], root, set()) == ("skipped", "no API key set")
+    finally:
+        for k, v in old.items():
+            os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
 
 
 def test_supabase_sql_reader():

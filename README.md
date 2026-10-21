@@ -63,11 +63,14 @@ Covers ingestion safety (zip traversal, size caps, cleanup), dedupe, secret clas
 
 | Variable | Default | Notes |
 |---|---|---|
-| `TRIAGE_BACKEND` | `groq` | `groq` or `local` |
+| `TRIAGE_BACKEND` | `groq` | `groq`, `local` (Ollama) or `off` |
 | `GROQ_API_KEY` | — | required for `groq` (`LLM_API_KEY` also accepted) |
-| `GROQ_MODEL` | `openai/gpt-oss-20b` | see console.groq.com/docs/models |
+| `GROQ_MODEL` | `openai/gpt-oss-120b` | see console.groq.com/docs/models |
 | `OLLAMA_URL` | `http://localhost:11434` | for `local` |
+| `OLLAMA_MODEL` | `gemma3:4b` | for `local` |
 | `ALLOWED_ORIGINS` | `http://localhost:5173` | comma-separated origins allowed to call the API (CORS) |
 | `PORT` | `10000` | container only (Render injects it) |
 
-Without an LLM key the scan still runs; findings use the built-in explanations and fixes.
+Without an LLM key the scan still runs; findings use the built-in explanations and fixes, and the report lists the AI review as not checked.
+
+The AI review only sees findings a rule couldn't settle ("Needs review", generic scanner rules, generic secrets), never proven ones. It gets the code around each one with secrets masked, must cite the line that decides its verdict (otherwise it counts as "unsure"), can move severity one level, and its fixes are kept only if the lines they remove exist. What it dismisses stays visible under "filtered out", with its reason.

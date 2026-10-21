@@ -40,6 +40,8 @@ CREATE TABLE IF NOT EXISTS findings (
   refs TEXT DEFAULT '[]',
   evidence TEXT DEFAULT '[]',
   triage_note TEXT,
+  ai_verdict TEXT,
+  ai_note TEXT,
   kind TEXT,
   end_line INTEGER,
   cwe TEXT DEFAULT '[]',
@@ -61,6 +63,9 @@ def connect():
 def init():
     with connect() as c:
         c.executescript(SCHEMA)
+        for col in ("ai_verdict", "ai_note"):  # databases made before Phase 5
+            if col not in {r[1] for r in c.execute("PRAGMA table_info(findings)")}:
+                c.execute(f"ALTER TABLE findings ADD COLUMN {col} TEXT")
         # a scan that was running when the server stopped will never finish: say so instead of polling forever
         c.execute("UPDATE scans SET status = 'failed', stage = 'Failed', error = 'The server restarted during this scan. Run it again.' "
                   "WHERE status IN ('queued', 'running')")

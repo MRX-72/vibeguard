@@ -67,10 +67,15 @@ DEP_IMPACT = "Attackers look for apps running versions with published security b
 SECRET_IMPACT = "Anyone who can see this code (or your site's JavaScript) can use this credential."
 
 
-def normalize(findings: list[Finding]) -> list[Finding]:
+def secret_values(findings: list[Finding]) -> set[str]:
+    """Every secret the raw findings know of (call before normalize, which masks the snippets these are read from)."""
     secrets = {f._secret for f in findings if f._secret and len(f._secret) >= 8}
     # credentials only a SAST rule spotted (jwt.sign(p, "supersecret123")) are masked in *every* finding that shows that line
-    secrets |= {lit for f in findings if f.kind != "dependency" and SECRET_CWES & set(f.cwe) for lit in _flagged_literals(f)}
+    return secrets | {lit for f in findings if f.kind != "dependency" and SECRET_CWES & set(f.cwe) for lit in _flagged_literals(f)}
+
+
+def normalize(findings: list[Finding], secrets: set[str] | None = None) -> list[Finding]:
+    secrets = secret_values(findings) if secrets is None else secrets
     merged: list[Finding] = []
     for f in sorted(findings, key=_rank):
         f.detected_by = f.detected_by or [f.source]

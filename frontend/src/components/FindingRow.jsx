@@ -1,5 +1,7 @@
 import { SEV } from '../severity'
 
+const AI = { real: 'AI agrees', false_positive: 'AI: not a real risk', unsure: 'AI: unsure' }
+
 const CONFIDENCE = {
   'Confirmed reachable': 'text-fg bg-fg/10',
   Likely: 'text-muted bg-raised',
@@ -33,8 +35,13 @@ export default function FindingRow({ finding: f, index }) {
             <span className={`rounded px-2 py-0.5 text-xs font-medium ${CONFIDENCE[f.confidence]}`}>
               {f.kind === 'secret' && f.confidence === 'Confirmed reachable' ? 'Confirmed live' : f.confidence}
             </span>
+            {f.ai_verdict && <span className="rounded bg-raised px-2 py-0.5 text-xs font-medium text-muted">{AI[f.ai_verdict]}</span>}
             {f.detected_by?.length > 0 && <span className="text-faint">Found by {f.detected_by.join(', ')}</span>}
           </div>
+
+          {f.ai_note && (
+            <p className="text-sm leading-relaxed text-muted"><span className="text-faint">AI review: </span>{f.ai_note}</p>
+          )}
 
           {f.triage_note && <p className="text-sm leading-relaxed text-muted">{f.triage_note}</p>}
           {f.severity_reason && !f.triage_note?.includes(f.severity_reason) && (

@@ -31,6 +31,8 @@ class Finding(BaseModel):
     refs: list[str] = []
     evidence: list[str] = []  # source→sink path, one "file:line code" per step
     triage_note: str = ""
+    ai_verdict: str = ""  # AI review (Phase 5): "real" | "false_positive" | "unsure", "" when not reviewed
+    ai_note: str = ""  # the reviewer's one-line reason
     # normalization / dedupe (§16)
     kind: Kind = "code"
     end_line: int = 0

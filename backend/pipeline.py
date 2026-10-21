@@ -1,5 +1,6 @@
 import logging
 import multiprocessing
+import os
 import shutil
 import tempfile
 import threading
@@ -9,6 +10,7 @@ import db
 import ingest
 import normalize
 import scoring
+import triage
 from scanners import ALL as SCANNERS
 from scanners.base import ScannerError
 from scanners.custom_rules import settle
@@ -19,7 +21,7 @@ log = logging.getLogger("vibeguard")
 def initial_steps():
     return [{"key": "ingest", "label": "Preparing code", "state": "pending"}] + [
         {"key": s.name, "label": s.label, "tool": s.name, "state": "pending"} for s in SCANNERS
-    ]
+    ] + [{"key": "triage", "label": "AI review", "tool": (os.environ.get("TRIAGE_BACKEND") or "groq").lower(), "state": "pending"}]
 
 
 # ponytail: one scan at a time keeps a 512 MB Render instance alive; a real queue when there's real traffic
@@ -66,11 +68,19 @@ def _scan(scan_id, source_type, payload, label, verify_secrets, base):
             raw, scanners = [], [s(verify_secrets=verify_secrets) for s in SCANNERS]
             for scanner in scanners:
                 raw += _run_one(scan_id, scanner, root, work, steps)
-            if not any(s["state"] == "done" for s in steps[1:]):
+            if not any(s["state"] == "done" for s in steps[1:-1]):
                 # an empty report here would read as "all clear", which would be a lie
                 raise ingest.IngestError("None of the scanners could run on this server, so nothing was checked. Try again later.")
-            findings = normalize.normalize(raw)
-            for scanner, step in zip(scanners, steps[1:], strict=True):
+            secrets = normalize.secret_values(raw)
+            findings = normalize.normalize(raw, secrets)
+            # a second opinion while the code is still on disk; it can dismiss findings, so it comes before "already right"
+            db.update_scan(scan_id, stage="AI review…", steps=_set(steps, "triage", "running"))
+            try:
+                _set(steps, "triage", *triage.triage(findings, root, secrets))
+            except Exception:  # fail soft, like a scanner: the report stands without the second opinion
+                log.exception("AI review crashed")
+                _set(steps, "triage", "failed", "didn't finish (unexpected error)")
+            for scanner, step in zip(scanners, steps[1:-1], strict=True):
                 if scanner.passed and step["state"] == "done":  # "already right" only where the final report agrees
                     step["passed"] = settle(scanner.passed, findings)
         db.save_findings(scan_id, findings)
