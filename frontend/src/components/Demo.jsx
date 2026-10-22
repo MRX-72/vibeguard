@@ -2,6 +2,7 @@ import { ArrowRight, GitPullRequest, LoaderCircle } from 'lucide-react'
 import { useState } from 'react'
 import { useScans } from '../history'
 import { SEV } from '../severity'
+import Check from './Check'
 import { Mark } from './Logo'
 
 // What's planted in sample-repo/, worst first; the review finds each one (the test suite pins its full report).
@@ -83,7 +84,7 @@ export default function Demo({ onSubmit, tick }) {
             <ul className="mt-5 flex flex-col">
               {PLANTED.map((p) => (
                 <li key={p.what} className="flex items-start gap-3 border-t border-line py-3 first:border-t-0">
-                  <input type="checkbox" disabled checked={!!last} aria-label={last ? 'Found in your last review' : 'Not reviewed yet'} className="mt-1 size-4 shrink-0" />
+                  <Check checked={!!last} label={last ? 'Found in your last review' : 'Not reviewed yet'} className="mt-1" />
                   <span className="min-w-0">
                     <span className="text-[15px] leading-snug">
                       <span className={`${SEV[p.sev].text} ${SEV[p.sev].weight}`}>{p.sev}:</span> {p.what}

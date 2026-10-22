@@ -40,7 +40,7 @@ export default function FindingRow({ finding: f, resolved = false, onResolve }) 
         </summary>
 
         <div className="border-t border-line">
-          {f.code_snippet && <Code code={f.code_snippet} start={f.snippet_start} from={f.line} to={f.end_line || f.line} />}
+          {f.code_snippet && <Code code={f.code_snippet} start={f.snippet_start} from={f.line} to={f.end_line || f.line} tone={noise ? { soft: 'bg-line/60', text: 'text-muted' } : sev} />}
 
           <div className="flex flex-col gap-4 px-4 py-4 sm:pl-[3.25rem]">
             {f.impact && <p className="text-[16.5px] leading-relaxed font-medium text-pretty">{f.impact}</p>}
@@ -56,7 +56,7 @@ export default function FindingRow({ finding: f, resolved = false, onResolve }) 
               <div>
                 <p className="mb-1.5 text-[13.5px] font-semibold">{f.kind === 'dependency' ? 'Advisories' : 'Evidence'}</p>
                 <ul className="flex list-disc flex-col gap-1 pl-5 text-[14px] leading-relaxed text-muted marker:text-faint">
-                  {f.evidence.map((e, i) => <li key={i} className="break-words">{e}</li>)}
+                  {f.evidence.map((e, i) => <li key={i} className="break-words">{mono(e)}</li>)}
                 </ul>
               </div>
             )}
@@ -82,7 +82,6 @@ export default function FindingRow({ finding: f, resolved = false, onResolve }) 
                   <CircleCheck className="size-4" strokeWidth={2} />{resolved ? 'Reopen conversation' : 'Resolve conversation'}
                 </button>
               )}
-              {f.detected_by?.length > 0 && <span className="text-[13px] text-faint">Found by {f.detected_by.join(', ')}</span>}
               {f.refs?.length > 0 && (
                 <ul className="flex flex-wrap gap-x-3 gap-y-1 text-[13px]">
                   {f.refs.map((r) => (
@@ -96,6 +95,12 @@ export default function FindingRow({ finding: f, resolved = false, onResolve }) 
       </details>
     </li>
   )
+}
+
+// Paths, path:line references and shell commands are code: set them in the code face.
+function mono(text) {
+  return text.split(/(\b[\w./-]+\.\w{1,5}:\d+\b|\bcurl '[^']*'[^.]*?(?=\. |$)|`[^`]+`)/).map((part, i) =>
+    i % 2 ? <code key={i} className="rounded bg-raised px-1 py-px font-mono text-[12.5px] text-fg">{part.replace(/^`|`$/g, '')}</code> : part)
 }
 
 function refLabel(url) {
@@ -151,7 +156,7 @@ function Suggestion({ diff }) {
 }
 
 // The code the comment is about, numbered, with the flagged lines marked like a selected range in a review.
-function Code({ code, start, from, to }) {
+function Code({ code, start, from, to, tone }) {
   const numbered = start > 0
   return (
     <pre className="overflow-x-auto border-b border-line bg-inset py-2 font-mono text-[12.5px] leading-[1.75]">
@@ -159,8 +164,8 @@ function Code({ code, start, from, to }) {
         const n = start + i
         const hit = numbered && n >= from && n <= to
         return (
-          <div key={i} className={`flex min-w-max ${hit ? 'bg-med/[0.09] text-fg' : 'text-muted'}`}>
-            {numbered && <span className={`w-12 shrink-0 pr-4 text-right select-none ${hit ? 'text-med' : 'text-faint'}`} aria-hidden>{n}</span>}
+          <div key={i} className={`flex min-w-max ${hit ? `${tone.soft} text-fg` : 'text-muted'}`}>
+            {numbered && <span className={`w-12 shrink-0 pr-4 text-right select-none ${hit ? tone.text : 'text-faint'}`} aria-hidden>{n}</span>}
             <span className={numbered ? 'pr-4' : 'px-4'}>{l || ' '}</span>
           </div>
         )

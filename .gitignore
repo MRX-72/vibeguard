@@ -11,5 +11,5 @@ backend/static/
 # the demo app ships its .env on purpose (it is part of what VibeGuard detects)
 !sample-repo/.env
 backend/rules/registry.json
-.claude/scheduled_tasks.lock
+.claude/
 .impeccable/review/

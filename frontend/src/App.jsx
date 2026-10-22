@@ -1,4 +1,4 @@
-import { CircleAlert, FlaskConical, GitPullRequest, History, House, RefreshCw } from 'lucide-react'
+import { CircleAlert, FlaskConical, GitPullRequest, History, House } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 import { getReport, getStatus, health, startScan } from './api'
 import { rememberScan, scanIds } from './history'
@@ -17,6 +17,28 @@ const PAGES = [
   { page: 'history', href: '#/history', label: 'History', icon: History },
 ]
 
+// one nav link, reused by the desktop bar and the mobile strip.
+// no height of its own: the bar sets it, so the underline always lands on the border.
+function NavLink({ page, href, label: text, icon: Icon, active, count, className = '' }) {
+  const on = active === page
+  return (
+    <a
+      href={href}
+      aria-current={on ? 'page' : undefined}
+      className={`relative flex shrink-0 items-center gap-2 text-[15px] transition-colors ${className} ${
+        on ? 'font-semibold text-fg' : 'text-muted hover:text-fg'
+      }`}
+    >
+      <Icon className={`size-[17px] ${on ? 'text-fg' : 'text-faint'}`} strokeWidth={1.9} />
+      {text}
+      {page === 'history' && count > 0 && (
+        <span className="rounded-full bg-raised px-1.5 py-0.5 text-[12px] font-medium text-muted">{count}</span>
+      )}
+      {on && <span className="absolute inset-x-0 -bottom-px h-[2px] rounded-full bg-fg" aria-hidden />}
+    </a>
+  )
+}
+
 function route() {
   const id = location.hash.match(/^#\/scan\/([\w-]+)/)?.[1]
   if (id) return { page: 'report', id }
@@ -26,7 +48,7 @@ function route() {
 
 export default function App() {
   const [at, setAt] = useState(route)
-  const [tick, setTick] = useState(0) // bumps when the user asks for fresh data
+  const tick = 0 // data refreshes itself while a scan runs; there's no manual refresh
   const status = useHealth(tick)
   const [label, setLabel] = useState(null) // the open report's name, for the header
 
@@ -48,50 +70,49 @@ export default function App() {
   return (
     <div className="min-h-dvh">
       <header className="sticky top-0 z-30 border-b border-line bg-ink/90 backdrop-blur-md print:hidden">
-        <div className="mx-auto flex h-14 max-w-[1240px] items-center gap-3 px-4 sm:px-8">
-          <a href="#/" aria-label="VibeGuard home" className="rounded-md"><Logo /></a>
-          {at.page === 'report' && label && (
-            <span className="hidden min-w-0 items-center gap-3 text-[15px] sm:flex">
-              <span className="text-line-strong">/</span>
-              <span className="truncate font-semibold">{label}</span>
-            </span>
-          )}
+        {/* desktop: one visual lane. brand at the left edge, routes beside it,
+            the action holding the right edge. the eye walks logo, routes, action. */}
+        <div className="hidden h-16 w-full items-center gap-8 px-4 sm:flex sm:px-10">
+          <div className="flex min-w-0 items-center gap-3">
+            <a href="#/" aria-label="VibeGuard home" className="rounded-md"><Logo /></a>
+            {at.page === 'report' && label && (
+              <span className="flex min-w-0 items-center gap-3 text-[15px]">
+                <span className="text-line-strong">/</span>
+                <span className="truncate font-semibold">{label}</span>
+              </span>
+            )}
+          </div>
+          <nav className="flex h-16 items-center gap-8" aria-label="Pages">
+            {PAGES.map((p) => (
+              <NavLink key={p.page} count={count} active={active} {...p} className="h-16" />
+            ))}
+          </nav>
           <div className="ml-auto flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setTick((t) => t + 1)}
-              className="grid size-8 place-items-center rounded-md border border-line text-muted transition-colors hover:border-line-strong hover:text-fg"
-              aria-label="Refresh your reviews"
-              title="Refresh"
-            >
-              <RefreshCw className="size-[15px]" strokeWidth={1.9} />
-            </button>
             {at.page !== 'scan' && (
-              <a href="#/scan" className="rounded-md bg-go px-3 py-1.5 text-[14px] font-semibold text-white transition-colors hover:bg-[#1a7a4b]">
+              <a href="#/scan" className="rounded-full bg-white px-4.5 py-2 text-[14px] font-semibold text-ink transition-colors hover:bg-[#d9d9de]">
                 Start a review
               </a>
             )}
           </div>
         </div>
-        <nav className="mx-auto flex max-w-[1240px] gap-1 overflow-x-auto px-2 sm:px-6" aria-label="Pages">
-          {PAGES.map(({ page, href, label: text, icon: Icon }) => (
-            <a
-              key={page}
-              href={href}
-              aria-current={active === page ? 'page' : undefined}
-              className={`relative flex shrink-0 items-center gap-2 rounded-md px-2.5 pt-2 pb-3 text-[14.5px] transition-colors sm:px-3 ${
-                active === page ? 'font-semibold text-fg' : 'text-muted hover:text-fg'
-              }`}
-            >
-              <Icon className="hidden size-4 text-faint sm:block" strokeWidth={1.9} />
-              {text}
-              {page === 'history' && count > 0 && (
-                <span className="rounded-full bg-raised px-1.5 text-[12px] font-medium text-muted">{count}</span>
+        {/* mobile: the row has no room for all three zones, so the routes keep their own strip */}
+        <div className="sm:hidden">
+          <div className="flex h-14 w-full items-center px-4">
+            <a href="#/" aria-label="VibeGuard home" className="rounded-md"><Logo /></a>
+            <div className="ml-auto flex items-center">
+              {at.page !== 'scan' && (
+                <a href="#/scan" className="rounded-full bg-white px-4 py-1.5 text-[13.5px] font-semibold text-ink transition-colors hover:bg-[#d9d9de]">
+                  Start a review
+                </a>
               )}
-              {active === page && <span className="absolute inset-x-2 -bottom-px h-[2px] rounded-full bg-crit" aria-hidden />}
-            </a>
-          ))}
-        </nav>
+            </div>
+          </div>
+          <nav className="flex h-14 items-center justify-start gap-1 overflow-x-auto px-3" aria-label="Pages">
+            {PAGES.map((p) => (
+              <NavLink key={p.page} count={count} active={active} {...p} className="h-14 rounded-md px-2.5" />
+            ))}
+          </nav>
+        </div>
       </header>
 
       {status === 'waking' || status === 'down' ? (
@@ -103,7 +124,7 @@ export default function App() {
         </p>
       ) : null}
 
-      <main className="mx-auto w-full max-w-[1240px] px-4 pb-28 sm:px-8">
+      <main className="w-full px-4 pb-28 sm:px-10">
         {at.page === 'home' && <Home />}
         {at.page === 'scan' && <ScanPage onSubmit={submit} tick={tick} />}
         {at.page === 'demo' && <Demo onSubmit={submit} tick={tick} />}

@@ -1,13 +1,14 @@
 import { CloudUpload, Code, FolderGit2, KeyRound, LoaderCircle, Lock } from 'lucide-react'
 import { useRef, useState } from 'react'
+import Check from './Check'
 
 const TABS = [
-  { id: 'paste', label: 'Paste code', icon: Code },
-  { id: 'zip', label: 'Upload zip', icon: CloudUpload },
-  { id: 'github', label: 'GitHub repo', icon: FolderGit2 },
+  { id: 'paste', label: 'Paste code', short: 'Paste', icon: Code },
+  { id: 'zip', label: 'Upload zip', short: 'Zip', icon: CloudUpload },
+  { id: 'github', label: 'GitHub repo', short: 'GitHub', icon: FolderGit2 },
 ]
 const MAX_ZIP = 50 * 1024 * 1024
-const PLACEHOLDER = 'Paste a component, an API route, a .env file, Firebase rules or a Supabase migration.'
+const PLACEHOLDER = 'Paste a component, route, .env file,\nFirebase rules or Supabase migration.'
 
 export default function NewScan({ onSubmit }) {
   const [tab, setTab] = useState('paste')
@@ -51,7 +52,7 @@ export default function NewScan({ onSubmit }) {
   return (
     <form id="new-scan" onSubmit={submit} className="overflow-hidden rounded-lg border border-line bg-surface">
       <div role="tablist" aria-label="How to provide code" className="flex gap-1 overflow-x-auto border-b border-line bg-raised/50 px-2 pt-2">
-        {TABS.map(({ id, label, icon: Icon }) => (
+        {TABS.map(({ id, label, short, icon: Icon }) => (
           <button
             key={id}
             type="button"
@@ -65,7 +66,7 @@ export default function NewScan({ onSubmit }) {
             }`}
           >
             <Icon className="size-4" strokeWidth={1.9} />
-            {label}
+            <span className="sm:hidden">{short}</span><span className="hidden sm:inline">{label}</span>
           </button>
         ))}
       </div>
@@ -120,7 +121,7 @@ export default function NewScan({ onSubmit }) {
 
       <div className="flex flex-col gap-4 border-t border-line px-3 py-3.5 sm:px-4">
         <label className="flex cursor-pointer items-start gap-3 text-[14px]">
-          <input type="checkbox" checked={verify} onChange={(e) => setVerify(e.target.checked)} className="mt-0.5 size-4 shrink-0" />
+          <Check checked={verify} onChange={setVerify} className="mt-0.5" />
           <span>
             <span className="flex items-center gap-1.5 font-medium"><KeyRound className="size-3.5 text-faint" strokeWidth={2} />Test any keys we find</span>
             <span className="mt-0.5 block text-faint">Sends each key to its own provider once, read-only, to see if it still works. Only for code you own.</span>
@@ -132,7 +133,7 @@ export default function NewScan({ onSubmit }) {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <p className="flex max-w-[52ch] items-start gap-2 text-[13px] leading-relaxed text-faint">
             <Lock className="mt-0.5 size-3.5 shrink-0" strokeWidth={2} />
-            Used for this review only, then deleted. An AI model on Groq double-checks uncertain comments, with secrets masked.
+            Used for this review only, then deleted. Code near uncertain comments is sent to an AI provider (Groq) to double-check, with secrets masked.
           </p>
           <button
             type="submit"

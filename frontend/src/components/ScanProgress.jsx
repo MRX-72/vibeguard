@@ -11,10 +11,7 @@ export default function ScanProgress({ status }) {
 
   return (
     <section className="mx-auto max-w-3xl pt-10 sm:pt-12" aria-live="polite">
-      <span className="inline-flex items-center gap-1.5 rounded-full border border-med/35 bg-med/15 px-2.5 py-1 text-[13px] font-semibold text-med">
-        <LoaderCircle className="size-3.5 animate-spin" strokeWidth={2.4} />{queued ? 'Queued' : 'Review in progress'}
-      </span>
-      <h1 className="mt-4 text-[2rem] font-bold tracking-[-0.03em]">{queued ? 'Waiting for a free reviewer' : 'Reading your code'}</h1>
+      <h1 className="text-[2rem] font-bold tracking-[-0.03em]">{queued ? 'Waiting for a free reviewer' : 'Reading your code'}</h1>
       <p className="mt-2 text-[16px] text-muted">
         {queued ? 'Another review is running. Yours starts as soon as it finishes.' : status?.stage ?? 'Starting…'}
       </p>
@@ -25,9 +22,9 @@ export default function ScanProgress({ status }) {
             {finished === steps.length && steps.length ? 'All checks have finished' : "Some checks haven't completed yet"}
           </p>
           <p className="mt-0.5 text-[13.5px] text-faint">{finished} of {steps.length || '…'} checks finished</p>
-          <ol className="mt-3 flex h-2 gap-1" aria-hidden>
+          <ol className="mt-3 flex h-2 overflow-hidden rounded-full bg-raised" aria-hidden>
             {steps.map((s) => (
-              <li key={s.key} className={`relative flex-1 overflow-hidden rounded-full ${SEGMENT[s.state] ?? 'bg-raised'}`}>
+              <li key={s.key} className={`relative flex-1 overflow-hidden border-r border-ink/70 last:border-r-0 ${SEGMENT[s.state] ?? 'bg-raised'}`}>
                 {s.state === 'running' && <span className="absolute inset-y-0 w-1/3 bg-white/60 motion-safe:animate-[scan-light_1.1s_linear_infinite]" />}
               </li>
             ))}
@@ -41,7 +38,6 @@ export default function ScanProgress({ status }) {
                 <span className={`text-[14.5px] ${s.state === 'running' ? 'font-semibold text-fg' : s.state === 'pending' || s.state === 'na' ? 'text-faint' : 'text-fg'}`}>
                   {s.label}
                 </span>
-                {s.tool && <span className="ml-2 font-mono text-[12.5px] text-faint">{s.tool}</span>}
               </span>
               {s.note && <span className="max-w-[45%] truncate text-right text-[13px] text-faint">{s.note}{s.checked ? ` in ${s.checked}` : ''}</span>}
             </li>

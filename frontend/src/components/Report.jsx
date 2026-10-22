@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { BASE } from '../api'
 import { GRADE_COLOR, ORDER, SEV, VERDICT } from '../severity'
 import FindingRow from './FindingRow'
+import Check from './Check'
 import { Mark } from './Logo'
 
 const when = new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' })
@@ -46,10 +47,10 @@ export default function Report({ report }) {
           <span><span className="font-semibold">VibeGuard</span> <span className="text-muted">{grade === 'A' || grade === 'B' ? 'approved these changes' : 'requested changes'}</span></span>
         </div>
         <div className="grid gap-8 px-4 py-6 sm:px-6 md:grid-cols-[auto_minmax(0,1fr)] md:gap-10">
-          <div className="flex items-end gap-5 md:block">
-            <p className={`text-[6rem] leading-[0.8] font-extrabold tracking-[-0.04em] ${GRADE_COLOR[grade]}`} aria-label={`Grade ${grade}`}>{grade}</p>
-            <p className="pb-1 text-[14px] text-muted md:mt-4 md:pb-0">
-              Risk <span className="text-[18px] font-bold text-fg">{score}</span> of 100
+          <div className="flex items-center gap-4 md:block">
+            <p className={`grid size-16 place-items-center rounded-lg border border-line-strong bg-inset text-[2.25rem] leading-none font-bold ${GRADE_COLOR[grade]}`} aria-label={`Grade ${grade}`}>{grade}</p>
+            <p className="text-[14px] text-muted md:mt-3">
+              Risk <span className="text-[16px] font-semibold text-fg">{score}</span> of 100
             </p>
           </div>
           <div className="min-w-0">
@@ -69,13 +70,7 @@ export default function Report({ report }) {
                 <ul className="mt-2.5 flex flex-col gap-2">
                   {top.map((f) => (
                     <li key={f.id} className="flex items-start gap-2.5 text-[15px]">
-                      <input
-                        type="checkbox"
-                        checked={resolved.has(f.id)}
-                        onChange={() => toggle(f.id)}
-                        aria-label={`Mark "${f.title}" resolved`}
-                        className="mt-1 size-4 shrink-0"
-                      />
+                      <Check checked={resolved.has(f.id)} onChange={() => toggle(f.id)} label={`Mark "${f.title}" resolved`} className="mt-1" />
                       <button type="button" onClick={() => openFinding(f.id)} className={`text-left hover:underline ${resolved.has(f.id) ? 'text-muted line-through' : ''}`}>
                         <span className={`${SEV[f.severity].text} font-semibold`}>{f.severity}:</span> {f.title}
                         {f.file && <span className="ml-1.5 font-mono text-[13px] break-all text-faint">{f.file}{f.line ? `:${f.line}` : ''}</span>}
@@ -159,7 +154,6 @@ export default function Report({ report }) {
                 : s.state === 'failed' ? <CircleX className="size-4 shrink-0 text-crit" strokeWidth={2} />
                 : <CircleMinus className="size-4 shrink-0 text-faint" strokeWidth={2} />}
               <span className={s.state === 'done' ? '' : 'text-muted'}>{s.label}</span>
-              <span className="hidden font-mono text-[12.5px] text-faint sm:inline">{s.tool}</span>
               <span className="ml-auto truncate text-right text-[13px] text-faint">{s.note}{s.checked ? ` in ${s.checked}` : ''}</span>
             </li>
           ))}

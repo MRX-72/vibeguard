@@ -1,19 +1,20 @@
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "Schibsted Grotesk", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: "Red Hat Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --font-sans: "Geist", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Geist", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
 
-  /* a pull-request review at night: graphite canvas, diff colours carry meaning */
-  --color-ink: #111317; /* canvas */
-  --color-inset: #0c0e11; /* code */
-  --color-surface: #171a1f; /* panels */
-  --color-raised: #1d2128;
-  --color-line: #282d35;
-  --color-line-strong: #363c46;
-  --color-fg: #e6e8eb;
-  --color-muted: #a3aab5;
-  --color-faint: #7f8794;
+  /* vercel-grade black: #000 canvas, type does the talking, hairlines are the only chrome */
+  --color-ink: #000000; /* canvas */
+  --color-inset: #0a0a0a; /* code */
+  --color-surface: #0f0f0f; /* panels */
+  --color-raised: #1a1a1a; /* hover fills */
+  --color-line: #262626;
+  --color-line-strong: #3f3f3f;
+  --color-fg: #ededed;
+  --color-muted: #a1a1aa;
+  --color-faint: #666670;
 
   --color-go: #1f8a55; /* primary action: submit / start a review */
   --color-fix: #43c286; /* added lines, fixes, passed checks */
@@ -58,10 +59,20 @@
   from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: none; }
 }
+/* a terminal cursor, patient between lines */
+@keyframes blink {
+  0%, 60% { opacity: 1; }
+  61%, 100% { opacity: 0; }
+}
 /* the check row's light marking "now" */
 @keyframes scan-light {
   from { transform: translateX(-100%); }
   to { transform: translateX(400%); }
+}
+/* hero entrance: rise out of a blur, like focus pulling in */
+@keyframes settle {
+  from { opacity: 0; transform: translateY(12px); filter: blur(8px); }
+  to { opacity: 1; transform: none; filter: none; }
 }
 
 /* Save as PDF: a light page, every card expanded (Report opens them), no buttons */

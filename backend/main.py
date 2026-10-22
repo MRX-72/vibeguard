@@ -94,7 +94,9 @@ def _scan_or_404(scan_id):
 @app.get("/scan/{scan_id}/status")
 def scan_status(scan_id: str):
     s = _scan_or_404(scan_id)
-    return {k: s[k] for k in ("status", "stage", "risk_score", "steps", "error")}
+    # the tool behind each step is our business: the browser only needs the check's own name
+    steps = [{k: v for k, v in step.items() if k != "tool"} for step in s["steps"]]
+    return {k: s[k] for k in ("status", "stage", "risk_score", "error")} | {"steps": steps}
 
 
 def _report(scan_id):
@@ -108,7 +110,9 @@ def _report(scan_id):
 @app.get("/scan/{scan_id}")
 def scan_report(scan_id: str):
     scan, grade, findings = _report(scan_id)
-    return {"scan": scan, "grade": grade, "summary": export.summary(findings), "findings": [f.model_dump() for f in findings]}
+    # which engine found what stays server-side: the review comment is all the user needs
+    return {"scan": scan, "grade": grade, "summary": export.summary(findings),
+            "findings": [f.model_dump(exclude={"detected_by"}) for f in findings]}
 
 
 def _done(scan_id):

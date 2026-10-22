@@ -890,7 +890,7 @@ def test_report_exports():
                       {"label": "AI review", "state": "skipped", "tool": "groq", "note": "turned off"}]}
     md = export.markdown(scan, "D", [crit, low, noise])
     for part in ("**Grade D**", "## This could hurt you", "1. **Key exposed** (Critical). Anyone can use it.", "```diff\n- a\n+ b",
-                 "> Move the key.", "## Already right", "- RLS is on", "Placeholder (", "It's an example value.", "- AI review (groq): turned off"):
+                 "> Move the key.", "## Already right", "- RLS is on", "Placeholder (", "It's an example value.", "- AI review: turned off"):
         assert part in md, part
     run = export.sarif([crit, low, noise])["runs"][0]
     results = {r["ruleId"]: r for r in run["results"]}
